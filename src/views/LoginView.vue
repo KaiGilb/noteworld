@@ -1,13 +1,15 @@
-<!-- UNIT_TYPE=Widget -->
-
-<!--
-  Login page for NoteWorld.
-  Shows a single "Connect to TwinPod" button that starts the Solid-OIDC flow.
-  The OIDC issuer is read from the VITE_TWINPOD_URL environment variable —
-  never hardcoded, per the app-structure standard.
--->
-
 <script setup>
+// UNIT_TYPE=Widget
+
+/**
+ * Login page for NoteWorld.
+ * Shows a single "Connect to TwinPod" button that starts the Solid-OIDC flow.
+ * The OIDC issuer is read from the VITE_TWINPOD_URL environment variable —
+ * never hardcoded, per the app-structure standard.
+ *
+ * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
+ */
+
 import { inject } from 'vue'
 
 const { login, error, loading } = inject('auth')
