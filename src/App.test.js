@@ -117,4 +117,44 @@ describe('App.vue — routing guard', () => {
     expect(wrapper.findComponent({ name: 'RouterView' }).exists()).toBe(false)
   })
 
+  // --- Gap tests written by QATester ---
+
+  // Spec: F.NoteWorld — RouterView must render (not loading indicator) when OIDC redirect is complete
+  // Gap: no test verifies the RouterView IS rendered when loading is false. The v-else branch has
+  // a test for the truthy side but nothing proves the falsy side works correctly.
+  test('renders RouterView when loading is false', async () => {
+    mockLoading.value = false
+    const router = makeRouter('/')
+    await router.push('/')
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    // RouterView component should be present in the tree when not loading
+    expect(wrapper.findComponent({ name: 'RouterView' }).exists()).toBe(true)
+  })
+
+  // Spec: F.NoteWorld — twinpodFetch must be provided to child components so future composables
+  // can make authenticated TwinPod requests without touching the session directly.
+  // Gap: no test verifies the 'twinpodFetch' injection is provided at all.
+  test('provides twinpodFetch to child components', async () => {
+    const router = makeRouter('/')
+    await router.push('/')
+    let injectedFetch
+    const ChildConsumer = {
+      template: '<div />',
+      inject: ['twinpodFetch'],
+      mounted() { injectedFetch = this.twinpodFetch }
+    }
+    // Mount App with a child that injects twinpodFetch
+    const wrapper = mount(App, {
+      global: {
+        plugins: [router],
+        // Override router-view to render our consumer so we can verify the injection
+        stubs: { RouterView: ChildConsumer }
+      }
+    })
+    await flushPromises()
+    // twinpodFetch must be a function (it wraps session.fetch)
+    expect(typeof injectedFetch).toBe('function')
+  })
+
 })
