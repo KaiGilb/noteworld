@@ -19,7 +19,7 @@ function connect() {
 </script>
 
 <template>
-  <div style="display: flex; flex-direction: column; align-items: center; padding: 4rem 2rem; font-family: sans-serif;">
+  <main style="display: flex; flex-direction: column; align-items: center; padding: 4rem 2rem; font-family: sans-serif;">
     <h1>NoteWorld</h1>
     <p>Connect your TwinPod to get started.</p>
 
@@ -32,8 +32,8 @@ function connect() {
     </button>
 
     <!-- Show auth errors if login setup fails before the redirect -->
-    <p v-if="error" style="color: #c00; margin-top: 1rem;">
+    <p v-if="error" role="alert" style="color: #c00; margin-top: 1rem;">
       {{ error.message }}
     </p>
-  </div>
+  </main>
 </template>

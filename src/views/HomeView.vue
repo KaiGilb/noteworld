@@ -21,7 +21,7 @@ async function handleLogout() {
 </script>
 
 <template>
-  <div style="padding: 2rem; font-family: sans-serif;">
+  <main style="padding: 2rem; font-family: sans-serif;">
     <h1>NoteWorld</h1>
 
     <p>
@@ -37,6 +37,6 @@ async function handleLogout() {
       Logout
     </button>
 
-    <p v-if="loading" style="color: #888; margin-top: 0.5rem;">Logging out…</p>
-  </div>
+    <p v-if="loading" role="status" style="color: #888; margin-top: 0.5rem;">Logging out…</p>
+  </main>
 </template>
