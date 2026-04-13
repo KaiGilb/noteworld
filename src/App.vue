@@ -1,21 +1,23 @@
-<!-- UNIT_TYPE=Widget -->
-
-<!--
-  Root component for NoteWorld.
-
-  Responsibilities:
-  1. Process the OIDC redirect on every page load (handleRedirect is a no-op
-     when there is no incoming auth code in the URL).
-  2. Redirect to /login when not authenticated; redirect to / when already
-     authenticated and arriving at /login.
-  3. Provide 'auth' and 'twinpodFetch' to all child views via inject so they
-     never need to touch the session directly.
-
-  session.fetch is the DPoP-aware replacement for window.fetch — it
-  automatically adds auth headers to every TwinPod request.
--->
-
 <script setup>
+// UNIT_TYPE=Widget
+
+/**
+ * Root component for NoteWorld.
+ *
+ * Responsibilities:
+ * 1. Process the OIDC redirect on every page load (handleRedirect is a no-op
+ *    when there is no incoming auth code in the URL).
+ * 2. Redirect to /login when not authenticated; redirect to / when already
+ *    authenticated and arriving at /login.
+ * 3. Provide 'auth' and 'twinpodFetch' to all child views via inject so they
+ *    never need to touch the session directly.
+ *
+ * session.fetch is the DPoP-aware replacement for window.fetch — it
+ * automatically adds auth headers to every TwinPod request.
+ *
+ * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
+ */
+
 import { provide, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useTwinPodAuth } from '@kaigilb/twinpod-auth'

@@ -1,12 +1,14 @@
-<!-- UNIT_TYPE=Widget -->
-
-<!--
-  Home page for NoteWorld — shown only when authenticated.
-  Displays the authenticated user's WebID and a Logout button.
-  This is the shell into which future NoteWorld features (Create Note, Find Note, etc.) will be added.
--->
-
 <script setup>
+// UNIT_TYPE=Widget
+
+/**
+ * Home page for NoteWorld — shown only when authenticated.
+ * Displays the authenticated user's WebID and a Logout button.
+ * This is the shell into which future NoteWorld features (Create Note, Find Note, etc.) will be added.
+ *
+ * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
+ */
+
 import { inject } from 'vue'
 import { useRouter } from 'vue-router'
 
