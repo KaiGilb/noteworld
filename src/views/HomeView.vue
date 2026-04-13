@@ -12,7 +12,7 @@
 import { inject } from 'vue'
 import { useRouter } from 'vue-router'
 
-const { webId, logout, loading } = inject('auth')
+const { webId, logout, loading, error } = inject('auth')
 const router = useRouter()
 
 async function handleLogout() {
@@ -40,5 +40,10 @@ async function handleLogout() {
     </button>
 
     <p v-if="loading" role="status" style="color: #888; margin-top: 0.5rem;">Logging out…</p>
+
+    <!-- Show logout errors so the user knows the session was not terminated -->
+    <p v-if="error" role="alert" style="color: #c00; margin-top: 0.5rem;">
+      {{ error.message }}
+    </p>
   </main>
 </template>
