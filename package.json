@@ -7,7 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:unit": "vitest run",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@kaigilb/twinpod-auth": "^1.0.0",
@@ -15,11 +16,16 @@
     "vue-router": "^4.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
+    "@playwright/test": "^1.59.1",
     "@vitejs/plugin-vue": "^5.0.0",
+    "@vue/test-utils": "^2.4.6",
+    "axe-core": "^4.11.2",
     "eslint": "^9.0.0",
     "eslint-plugin-vue": "^9.0.0",
+    "jsdom": "^24.0.0",
     "vite": "^5.0.0",
     "vitest": "^1.0.0",
-    "jsdom": "^24.0.0"
+    "vitest-axe": "^0.1.0"
   }
 }
