@@ -32,6 +32,14 @@ vi.mock('@kaigilb/twinpod-auth', () => ({
   })
 }))
 
+// Mock @kaigilb/twinpod-client — App.vue imports createHyperFetch from it and the package's
+// rdfStore entry pulls in rdflib (a CJS package with circular deps that break Vitest's ESM
+// environment). These tests only verify routing and auth behaviour, so a stub is sufficient.
+vi.mock('@kaigilb/twinpod-client', () => ({
+  createHyperFetch: () => vi.fn(),
+  createSolidFetch: () => vi.fn()
+}))
+
 import App from './App.vue'
 
 function makeRouter() {
@@ -39,7 +47,8 @@ function makeRouter() {
     history: createMemoryHistory(),
     routes: [
       { path: '/', component: { template: '<div>Home</div>' } },
-      { path: '/login', component: { template: '<div>Login</div>' } }
+      { path: '/login', component: { template: '<div>Login</div>' } },
+      { path: '/app', component: { template: '<div>App</div>' } }
     ]
   })
 }
@@ -52,6 +61,7 @@ describe('App.vue — routing guard', () => {
     mockWebId.value = null
     mockLoading.value = false
     mockError.value = null
+    sessionStorage.clear()
   })
 
   // Spec: F.NoteWorld — any route visited without a session must redirect to /login
@@ -132,19 +142,53 @@ describe('App.vue — routing guard', () => {
     expect(wrapper.findComponent({ name: 'RouterView' }).exists()).toBe(true)
   })
 
-  // Spec: F.NoteWorld — twinpodFetch must be provided to child components so future composables
-  // can make authenticated TwinPod requests without touching the session directly.
-  // Gap: no test verifies the 'twinpodFetch' injection is provided at all.
-  test('provides twinpodFetch to child components', async () => {
+  // Spec: F.NoteWorld — deep-link preservation. A user opening /app?target=<note> in a new
+  // tab (or hard-refreshing on the editor) must land back at that URL after logging in,
+  // not at / — losing the target would mean the intended note never opens.
+  test('unauthenticated user on /app?target=... stashes fullPath and redirects to /login', async () => {
+    mockIsLoggedIn.value = false
+    const router = makeRouter()
+    await router.push('/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_1')
+    mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(sessionStorage.getItem('noteworld:postLoginRedirect'))
+      .toBe('/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_1')
+  })
+
+  test('authenticated user with stashed redirect is pushed back to the stashed URL', async () => {
+    mockIsLoggedIn.value = true
+    sessionStorage.setItem('noteworld:postLoginRedirect', '/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_1')
+    const router = makeRouter()
+    await router.push('/')
+    mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath)
+      .toBe('/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_1')
+    expect(sessionStorage.getItem('noteworld:postLoginRedirect')).toBeNull()
+  })
+
+  test('authenticated user on /app without stash stays on /app', async () => {
+    mockIsLoggedIn.value = true
+    const router = makeRouter()
+    await router.push('/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_2')
+    mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/app')
+  })
+
+  // Spec: F.NoteWorld — hyperFetch must be provided to child components so TwinPod composables
+  // can make authenticated requests without touching the session directly.
+  test('provides hyperFetch to child components', async () => {
     const router = makeRouter('/')
     await router.push('/')
     let injectedFetch
     const ChildConsumer = {
       template: '<div />',
-      inject: ['twinpodFetch'],
-      mounted() { injectedFetch = this.twinpodFetch }
+      inject: ['hyperFetch'],
+      mounted() { injectedFetch = this.hyperFetch }
     }
-    // Mount App with a child that injects twinpodFetch
+    // Mount App with a child that injects hyperFetch
     const wrapper = mount(App, {
       global: {
         plugins: [router],
@@ -153,8 +197,49 @@ describe('App.vue — routing guard', () => {
       }
     })
     await flushPromises()
-    // twinpodFetch must be a function (it wraps session.fetch)
+    // hyperFetch must be a function
     expect(typeof injectedFetch).toBe('function')
+  })
+
+  // --- Gap tests written by VATester ---
+
+  // Spec gap: when the browser lands on `/?code=...&iss=...` (the OIDC redirect return),
+  // App.vue must NOT overwrite the stashed deep-link, because that stash holds the user's
+  // original target URL from BEFORE the round-trip. Overwriting it would strand the user
+  // at `/` instead of their note.
+  test('OIDC return with ?code=... does not overwrite an existing stashed redirect', async () => {
+    mockIsLoggedIn.value = false
+    sessionStorage.setItem('noteworld:postLoginRedirect', '/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_9')
+    const router = makeRouter()
+    await router.push('/?code=abc123&iss=https%3A%2F%2Fissuer.example')
+    mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    // The pre-OIDC stash must still be intact after the redirect callback runs.
+    expect(sessionStorage.getItem('noteworld:postLoginRedirect'))
+      .toBe('/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_9')
+  })
+
+  // Spec gap: stash must not be overwritten by an intermediate / visit when it already holds
+  // a deep-link destination (the failing test above demonstrates this as a live bug).
+  test('existing stashed deep-link is preserved when mounting on /', async () => {
+    mockIsLoggedIn.value = false
+    sessionStorage.setItem('noteworld:postLoginRedirect', '/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_77')
+    const router = makeRouter()
+    await router.push('/')
+    mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(sessionStorage.getItem('noteworld:postLoginRedirect'))
+      .toBe('/app?target=https%3A%2F%2Fpod.example%2Ft%2Ft_note_77')
+  })
+
+  // Spec gap: stashing should ignore /login itself (you cannot return to login).
+  test('unauthenticated user on /login does not stash /login as redirect', async () => {
+    mockIsLoggedIn.value = false
+    const router = makeRouter()
+    await router.push('/login')
+    mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+    expect(sessionStorage.getItem('noteworld:postLoginRedirect')).toBeNull()
   })
 
 })

@@ -9,28 +9,45 @@
  *    when there is no incoming auth code in the URL).
  * 2. Redirect to /login when not authenticated; redirect to / when already
  *    authenticated and arriving at /login.
- * 3. Provide 'auth' and 'twinpodFetch' to all child views via inject so they
+ * 3. Provide 'auth' and 'hyperFetch' to all child views via inject so they
  *    never need to touch the session directly.
  *
- * session.fetch is the DPoP-aware replacement for window.fetch — it
- * automatically adds auth headers to every TwinPod request.
+ * hyperFetch is built from @kaigilb/twinpod-client's createHyperFetch factory, bound to
+ * the Session returned by useTwinPodAuth. It adds TwinPod-required headers automatically.
  *
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { provide, onMounted } from 'vue'
+import { provide, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useTwinPodAuth } from '@kaigilb/twinpod-auth'
+import { createHyperFetch, createSolidFetch } from '@kaigilb/twinpod-client'
 
 const router = useRouter()
 const route = useRoute()
 
 const { isLoggedIn, webId, loading, error, session, handleRedirect, login, logout } =
-  useTwinPodAuth({ clientName: 'NoteWorld' })
+  useTwinPodAuth({
+    clientName: 'NoteWorld',
+    // Dev mode only: Playwright E2E tests inject a mock session via page.addInitScript()
+    // by setting window.__E2E_SESSION__ before the app loads. In production this is always
+    // null because import.meta.env.DEV is false.
+    _sessionOverride: import.meta.env.DEV ? (window.__E2E_SESSION__ ?? null) : null
+  })
 
-// Provide session.fetch as 'twinpodFetch' for all composables that read/write TwinPod data.
-// This is the DPoP-bound fetch — automatically adds auth headers when the session is active.
-provide('twinpodFetch', (url, options) => session.fetch(url, options))
+// Build the authenticated hyperFetch using our Session. useTwinPodAuth manages its own
+// Session singleton (not @inrupt's getDefaultSession), so we bind session.fetch explicitly.
+// createHyperFetch layers on pagination, Accept: text/turtle, Cache-Control, and hypergraph.
+const hyperFetch = createHyperFetch({ fetch: (url, init) => session.fetch(url, init) })
+const solidFetch = createSolidFetch({ fetch: (url, init) => session.fetch(url, init) })
+
+provide('hyperFetch', hyperFetch)
+provide('solidFetch', solidFetch)
+
+if (import.meta.env.DEV) {
+  window.__solidFetch = solidFetch
+  window.__session = session
+}
 
 // Provide auth state and actions so views never need to call useTwinPodAuth separately.
 // Using a single composable instance ensures there is only one set of reactive refs.
@@ -38,22 +55,53 @@ provide('auth', { isLoggedIn, webId, loading, error, login, logout })
 
 // On every page load: complete any in-progress OIDC redirect, then route accordingly.
 // restorePreviousSession (inside handleRedirect) also re-hydrates sessions from localStorage.
-onMounted(async () => {
-  await handleRedirect()
+//
+// Deep-link preservation: when an unauthenticated user lands on a protected URL
+// (e.g. /app?target=<note>), we stash the intended fullPath in sessionStorage
+// before sending them through login. After handleRedirect completes successfully,
+// we pop the stash and route back to the original URL so the note opens as requested.
+const REDIRECT_KEY = 'noteworld:postLoginRedirect'
+const initialAuthDone = ref(false)
 
-  if (isLoggedIn.value && route.path === '/login') {
-    // Arrived at /login but already authenticated — skip the login screen
-    router.push('/')
-  } else if (!isLoggedIn.value && route.path !== '/login') {
-    // Any protected route without a session → go to login
+onMounted(async () => {
+  await router.isReady()
+
+  // Stash the intended destination BEFORE handleRedirect. If the session is stale,
+  // handleRedirect silently triggers a full-page OIDC round-trip that lands on
+  // /?iss=...&code=..., discarding the original /app?target=... URL.
+  //   - Skip /login (never stash the login screen).
+  //   - Skip / (nothing to preserve — it's the default landing).
+  //   - Skip when ?code= is present (we're mid-OIDC-return; must not overwrite the
+  //     stash written before the round-trip).
+  //   - Skip when a stash already exists (previous mount's stash wins).
+  if (
+    route.path !== '/login' &&
+    route.path !== '/' &&
+    !route.query.code &&
+    !sessionStorage.getItem(REDIRECT_KEY)
+  ) {
+    sessionStorage.setItem(REDIRECT_KEY, route.fullPath)
+  }
+
+  await handleRedirect()
+  initialAuthDone.value = true
+
+  if (isLoggedIn.value) {
+    const stashed = sessionStorage.getItem(REDIRECT_KEY)
+    if (stashed && stashed !== '/login') {
+      sessionStorage.removeItem(REDIRECT_KEY)
+      router.push(stashed)
+    } else if (route.path === '/login') {
+      router.push('/')
+    }
+  } else if (route.path !== '/login') {
     router.push('/login')
   }
 })
 </script>
 
 <template>
-  <!-- Show a brief loading state while the OIDC redirect is being processed -->
-  <div v-if="loading" style="padding: 2rem; font-family: sans-serif;">
+  <div v-if="loading || !initialAuthDone" style="padding: 2rem; font-family: sans-serif;">
     Connecting…
   </div>
   <RouterView v-else />

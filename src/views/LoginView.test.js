@@ -116,4 +116,33 @@ describe('LoginView', () => {
 
   })
 
+  // --- Gap tests written by VATester ---
+
+  describe('mobile touch targets (MOBILE_03)', () => {
+
+    // Spec: MOBILE_03 — every interactive element must have a minimum touch target of 44×44px.
+    // LoginView's "Connect to TwinPod" button has no min-height in its inline style.
+    // jsdom does not do CSS layout, so we check for an explicit min-height inline style.
+    test('Connect to TwinPod button declares a min-height of at least 44px in its inline style', () => {
+      const wrapper = mount(LoginView, {
+        global: { provide: makeAuthProvide() }
+      })
+      const button = wrapper.find('button')
+      const style = button.attributes('style') || ''
+      const match = style.match(/min-height:\s*([\d.]+)(px|rem)/)
+      if (!match) {
+        throw new Error(
+          `Connect to TwinPod button has no min-height in its inline style. ` +
+          `MOBILE_03 requires a minimum touch target of 44×44px. ` +
+          `Add style="min-height: 44px" or equivalent.`
+        )
+      }
+      const value = parseFloat(match[1])
+      const unit = match[2]
+      const pixels = unit === 'rem' ? value * 16 : value
+      expect(pixels).toBeGreaterThanOrEqual(44)
+    })
+
+  })
+
 })
