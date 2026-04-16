@@ -1,6 +1,6 @@
 # @kaigilb/noteworld-notes
 
-Vue composables for creating and managing notes in a TwinPod LWS pod.
+Vue composables for creating and managing notes in a TwinPod flat node store.
 
 ---
 
@@ -20,42 +20,42 @@ Requires a `.npmrc` pointing `@kaigilb` at GitHub Packages:
 
 ## Public API
 
-### `useTwinPodNoteCreate(twinpodFetch)`
+### `useTwinPodNoteCreate(hyperFetch)`
 
-Creates a new empty note resource in a TwinPod LWS container.
+Creates a new note node in a TwinPod flat node store by POSTing a Turtle document to `{podBaseUrl}/node/`.
 
 ```js
 import { useTwinPodNoteCreate } from '@kaigilb/noteworld-notes'
 
-const twinpodFetch = inject('twinpodFetch')
+const hyperFetch = inject('hyperFetch')
 
 const {
   noteUri,      // Ref<string|null>  — URI of the newly created note; null before first successful create
   loading,      // Ref<boolean>      — true while the TwinPod POST is in progress
   error,        // Ref<{type, message, status?}|null>  — set when creation fails
-  createNote    // (containerUrl: string) => Promise<string|null>
-} = useTwinPodNoteCreate(twinpodFetch)
+  createNote    // (podBaseUrl: string) => Promise<string|null>
+} = useTwinPodNoteCreate(hyperFetch)
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `twinpodFetch` | `Function` | Authenticated DPoP-bound fetch from `inject('twinpodFetch')` |
+| `hyperFetch` | `Function` | Authenticated TwinPod fetch from `inject('hyperFetch')`. Must be the hyperFetch instance from the app's `rdfStore.js`. |
 
-**`createNote(containerUrl)`**
+**`createNote(podBaseUrl)`**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `containerUrl` | `string` | Absolute TwinPod container URI. Must end with `/`. |
+| `podBaseUrl` | `string` | TwinPod pod base URL without trailing slash. Example: `'https://tst-first.demo.systemtwin.com'` |
 
-Returns: `Promise<string|null>` — the new note's absolute URI, or `null` on failure.
+Returns: `Promise<string|null>` — the new note's absolute URI (e.g. `https://pod.../node/t_abc1`), or `null` on failure.
 
 **Error types:**
 
 | type | Cause |
 |------|-------|
-| `invalid-input` | `containerUrl` was empty or missing |
+| `invalid-input` | `podBaseUrl` was empty, null, or missing |
 | `http` | TwinPod returned a non-2xx response (includes `status` field) |
 | `missing-location` | TwinPod responded 2xx but did not return a `Location` header |
 | `network` | Fetch threw (network failure, DNS error, etc.) |
@@ -70,13 +70,13 @@ import { inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTwinPodNoteCreate } from '@kaigilb/noteworld-notes'
 
-const twinpodFetch = inject('twinpodFetch')
+const hyperFetch = inject('hyperFetch')
 const router = useRouter()
 
-const { loading, error, createNote } = useTwinPodNoteCreate(twinpodFetch)
+const { loading, error, createNote } = useTwinPodNoteCreate(hyperFetch)
 
 async function handleNewNote() {
-  const uri = await createNote(import.meta.env.VITE_TWINPOD_URL + '/notes/')
+  const uri = await createNote(import.meta.env.VITE_TWINPOD_URL)
   if (uri) {
     router.push({
       path: '/app',

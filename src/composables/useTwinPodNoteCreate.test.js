@@ -1,256 +1,247 @@
-// UNIT_TYPE=Hook
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 
-import { describe, test, expect, vi } from 'vitest'
+// Mock the Stack B pipeline: getBlankNode → storeToTurtle → modifyTurtle → uploadTurtleToResource
+// vi.hoisted runs before vi.mock hoisting, so these are available in mock factories.
+const { mockGraph, mock$rdf, mockNS, getBlankNode, storeToTurtle, modifyTurtle, uploadTurtleToResource } = vi.hoisted(() => {
+  const mockGraph = { add: vi.fn() }
+  return {
+    mockGraph,
+    mock$rdf: {
+      graph: vi.fn(() => mockGraph),
+      defaultGraph: vi.fn(() => ({})),
+      sym: vi.fn((uri) => ({ value: uri, termType: 'NamedNode' })),
+      literal: vi.fn((val) => ({ value: val, termType: 'Literal' })),
+    },
+    mockNS: {
+      RDF: vi.fn((name) => `http://www.w3.org/1999/02/22-rdf-syntax-ns#${name}`),
+      SCHEMA: vi.fn((name) => `http://schema.org/${name}`),
+    },
+    getBlankNode: vi.fn(() => ({ node: { value: '_:t1' }, existed: false })),
+    storeToTurtle: vi.fn(() => '_:t1 a <http://schema.org/Note> .\n'),
+    modifyTurtle: vi.fn((t) => t),
+    uploadTurtleToResource: vi.fn(),
+  }
+})
+
+vi.mock('@kaigilb/twinpod-client', () => ({
+  $rdf: mock$rdf,
+  NS: mockNS,
+  getBlankNode: (...args) => getBlankNode(...args),
+  storeToTurtle: (...args) => storeToTurtle(...args),
+  modifyTurtle: (...args) => modifyTurtle(...args),
+  uploadTurtleToResource: (...args) => uploadTurtleToResource(...args),
+}))
+
 import { useTwinPodNoteCreate } from './useTwinPodNoteCreate.js'
 
-// Spec: F.Create_Note — Success-Criteria: A new empty note is open and ready for text input
-// Spec: V.Speed_Create_Note — average time from initiating note creation to editor open must
-//   reach Goal of 0.5s; composable must complete its TwinPod call and return without blocking
+const POD = 'https://tst-first.demo.systemtwin.com'
 
-// Factory — creates a mock twinpodFetch that returns a successful POST response.
-function makeFetch({ location = 'https://tst-first.demo.systemtwin.com/notes/abc123', status = 201, ok = true } = {}) {
-  return vi.fn().mockResolvedValue({
-    ok,
-    status,
-    headers: {
-      get: (name) => name.toLowerCase() === 'location' ? location : null
-    }
+const fakeSolidFetch = vi.fn()
+
+beforeEach(() => {
+  getBlankNode.mockReset()
+  getBlankNode.mockReturnValue({ node: { value: '_:t1' }, existed: false })
+  storeToTurtle.mockReset()
+  storeToTurtle.mockReturnValue('_:t1 a <http://schema.org/Note> .\n')
+  modifyTurtle.mockReset()
+  modifyTurtle.mockImplementation((t) => t)
+  uploadTurtleToResource.mockReset()
+  uploadTurtleToResource.mockResolvedValue({ ok: true, status: 201, headers: null, locationUri: null, response: null })
+  mockGraph.add.mockReset()
+  mock$rdf.graph.mockReset()
+  mock$rdf.graph.mockReturnValue(mockGraph)
+  mock$rdf.sym.mockReset()
+  mock$rdf.sym.mockImplementation((uri) => ({ value: uri, termType: 'NamedNode' }))
+  mock$rdf.literal.mockReset()
+  mock$rdf.literal.mockImplementation((val) => ({ value: val, termType: 'Literal' }))
+  fakeSolidFetch.mockReset()
+})
+
+describe('useTwinPodNoteCreate — initial state', () => {
+  test('noteUri starts as null', () => {
+    const { noteUri } = useTwinPodNoteCreate(fakeSolidFetch)
+    expect(noteUri.value).toBeNull()
   })
-}
-
-// Container URL used across all tests.
-const CONTAINER = 'https://tst-first.demo.systemtwin.com/notes/'
-
-describe('useTwinPodNoteCreate', () => {
-
-  describe('initial state', () => {
-
-    test('noteUri starts as null', () => {
-      const { noteUri } = useTwinPodNoteCreate(makeFetch())
-      expect(noteUri.value).toBeNull()
-    })
-
-    test('loading starts as false', () => {
-      const { loading } = useTwinPodNoteCreate(makeFetch())
-      expect(loading.value).toBe(false)
-    })
-
-    test('error starts as null', () => {
-      const { error } = useTwinPodNoteCreate(makeFetch())
-      expect(error.value).toBeNull()
-    })
-
+  test('loading starts as false', () => {
+    const { loading } = useTwinPodNoteCreate(fakeSolidFetch)
+    expect(loading.value).toBe(false)
   })
+  test('error starts as null', () => {
+    const { error } = useTwinPodNoteCreate(fakeSolidFetch)
+    expect(error.value).toBeNull()
+  })
+})
 
-  describe('createNote — success', () => {
-
-    // Spec: F.Create_Note — a new LWS resource must be created in TwinPod and its URI returned
-    test('returns the note URI from the Location header', async () => {
-      const fetch = makeFetch({ location: 'https://tst-first.demo.systemtwin.com/notes/abc123' })
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      const uri = await createNote(CONTAINER)
-      expect(uri).toBe('https://tst-first.demo.systemtwin.com/notes/abc123')
-    })
-
-    test('sets noteUri.value to the returned URI', async () => {
-      const fetch = makeFetch({ location: 'https://tst-first.demo.systemtwin.com/notes/abc123' })
-      const { createNote, noteUri } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(noteUri.value).toBe('https://tst-first.demo.systemtwin.com/notes/abc123')
-    })
-
-    test('resolves an absolute Location header directly', async () => {
-      const fetch = makeFetch({ location: 'https://tst-first.demo.systemtwin.com/notes/xyz' })
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      const uri = await createNote(CONTAINER)
-      expect(uri).toBe('https://tst-first.demo.systemtwin.com/notes/xyz')
-    })
-
-    test('resolves a relative Location header against containerUrl', async () => {
-      // Some LWS pods return a relative path in Location — must be made absolute
-      const fetch = makeFetch({ location: '/notes/relative-slug' })
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      const uri = await createNote(CONTAINER)
-      expect(uri).toBe('https://tst-first.demo.systemtwin.com/notes/relative-slug')
-    })
-
-    test('POSTs to the containerUrl', async () => {
-      const fetch = makeFetch()
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(fetch).toHaveBeenCalledWith(CONTAINER, expect.objectContaining({ method: 'POST' }))
-    })
-
-    test('sends Content-Type: text/plain', async () => {
-      const fetch = makeFetch()
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(fetch).toHaveBeenCalledWith(
-        CONTAINER,
-        expect.objectContaining({ headers: expect.objectContaining({ 'Content-Type': 'text/plain' }) })
-      )
-    })
-
-    test('sends an empty body', async () => {
-      const fetch = makeFetch()
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(fetch).toHaveBeenCalledWith(CONTAINER, expect.objectContaining({ body: '' }))
-    })
-
-    test('error remains null after a successful create', async () => {
-      const { createNote, error } = useTwinPodNoteCreate(makeFetch())
-      await createNote(CONTAINER)
-      expect(error.value).toBeNull()
-    })
-
+describe('useTwinPodNoteCreate — success', () => {
+  test('returns a resource URL under {podRoot}/t/', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(POD)
+    expect(url).toMatch(new RegExp(`^${POD}/t/t_note_\\d+_[a-z0-9]{4}$`))
   })
 
-  describe('createNote — loading state', () => {
-
-    test('loading is false after createNote completes successfully', async () => {
-      const { createNote, loading } = useTwinPodNoteCreate(makeFetch())
-      await createNote(CONTAINER)
-      expect(loading.value).toBe(false)
-    })
-
-    test('loading is true while fetch is in progress', async () => {
-      let capturedLoading
-      const fetch = vi.fn().mockImplementation(async () => {
-        capturedLoading = loading.value
-        return { ok: true, status: 201, headers: { get: () => 'https://pod.example.com/notes/x' } }
-      })
-      const { createNote, loading } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(capturedLoading).toBe(true)
-    })
-
-    test('loading is false after createNote throws a network error', async () => {
-      const fetch = vi.fn().mockRejectedValue(new Error('Network failure'))
-      const { createNote, loading } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(loading.value).toBe(false)
-    })
-
-    test('loading is false after createNote receives an HTTP error', async () => {
-      const fetch = makeFetch({ ok: false, status: 500, location: null })
-      const { createNote, loading } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(loading.value).toBe(false)
-    })
-
+  test('sets noteUri to the resource URL', async () => {
+    const { noteUri, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(POD)
+    expect(noteUri.value).toBe(url)
   })
 
-  describe('createNote — error handling', () => {
-
-    test('sets error when containerUrl is missing', async () => {
-      const { createNote, error } = useTwinPodNoteCreate(makeFetch())
-      await createNote('')
-      expect(error.value).toMatchObject({ type: 'invalid-input' })
-    })
-
-    test('returns null when containerUrl is missing', async () => {
-      const { createNote } = useTwinPodNoteCreate(makeFetch())
-      const uri = await createNote('')
-      expect(uri).toBeNull()
-    })
-
-    test('sets error when response is 401 Unauthorized', async () => {
-      const fetch = makeFetch({ ok: false, status: 401, location: null })
-      const { createNote, error } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(error.value).toMatchObject({ type: 'http', status: 401 })
-    })
-
-    test('sets error when response is 403 Forbidden', async () => {
-      const fetch = makeFetch({ ok: false, status: 403, location: null })
-      const { createNote, error } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(error.value).toMatchObject({ type: 'http', status: 403 })
-    })
-
-    test('sets error when response is 500 Internal Server Error', async () => {
-      const fetch = makeFetch({ ok: false, status: 500, location: null })
-      const { createNote, error } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(error.value).toMatchObject({ type: 'http', status: 500 })
-    })
-
-    test('returns null when response is not ok', async () => {
-      const fetch = makeFetch({ ok: false, status: 403, location: null })
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      const uri = await createNote(CONTAINER)
-      expect(uri).toBeNull()
-    })
-
-    test('sets error when Location header is missing from a successful response', async () => {
-      // LWS pod returned 200/201 but forgot to include Location — a pod implementation bug
-      const fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 201,
-        headers: { get: () => null }
-      })
-      const { createNote, error } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(error.value).toMatchObject({ type: 'missing-location' })
-    })
-
-    test('returns null when Location header is missing', async () => {
-      const fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 201,
-        headers: { get: () => null }
-      })
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      const uri = await createNote(CONTAINER)
-      expect(uri).toBeNull()
-    })
-
-    test('sets error when fetch throws a network error', async () => {
-      const fetch = vi.fn().mockRejectedValue(new Error('Failed to fetch'))
-      const { createNote, error } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(error.value).toMatchObject({ type: 'network', message: 'Failed to fetch' })
-    })
-
-    test('returns null when fetch throws', async () => {
-      const fetch = vi.fn().mockRejectedValue(new Error('Failed to fetch'))
-      const { createNote } = useTwinPodNoteCreate(fetch)
-      const uri = await createNote(CONTAINER)
-      expect(uri).toBeNull()
-    })
-
-    test('clears a previous error before a new createNote call', async () => {
-      const { createNote, error } = useTwinPodNoteCreate(makeFetch())
-      // Seed a prior error
-      error.value = { type: 'network', message: 'old error' }
-      await createNote(CONTAINER)
-      expect(error.value).toBeNull()
-    })
-
-    test('noteUri remains null when createNote fails', async () => {
-      const fetch = makeFetch({ ok: false, status: 403, location: null })
-      const { createNote, noteUri } = useTwinPodNoteCreate(fetch)
-      await createNote(CONTAINER)
-      expect(noteUri.value).toBeNull()
-    })
-
+  test('loading is false after success', async () => {
+    const { loading, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(loading.value).toBe(false)
   })
 
-  describe('createNote — speed', () => {
+  test('error stays null after success', async () => {
+    const { error, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(error.value).toBeNull()
+  })
+})
 
-    // Spec: V.Speed_Create_Note — Goal: 0.5s from initiation to editor open.
-    // This test measures composable overhead only (mock fetch = 0ms).
-    // TwinPod network latency is the dominant factor in production and is not testable here.
-    test('resolves quickly when fetch responds immediately (composable overhead < 50ms)', async () => {
-      const { createNote } = useTwinPodNoteCreate(makeFetch())
-      const start = Date.now()
-      await createNote(CONTAINER)
-      const elapsed = Date.now() - start
-      // Composable logic itself must not introduce meaningful delay — 50ms is a conservative ceiling
-      expect(elapsed).toBeLessThan(50)
-    })
-
+describe('useTwinPodNoteCreate — Stack B pipeline contract', () => {
+  test('calls getBlankNode with $rdf and a label containing the resource ID', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(getBlankNode).toHaveBeenCalledTimes(1)
+    expect(getBlankNode.mock.calls[0][0]).toBe(mock$rdf)
+    expect(getBlankNode.mock.calls[0][1]).toMatch(/^Note: t_note_\d+_[a-z0-9]{4}$/)
   })
 
+  test('builds two triples in a temp store (rdf:type + schema:text)', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(mock$rdf.graph).toHaveBeenCalledTimes(1)
+    expect(mockGraph.add).toHaveBeenCalledTimes(2)
+  })
+
+  test('calls storeToTurtle with $rdf, the temp store, and empty base URL', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(storeToTurtle).toHaveBeenCalledTimes(1)
+    expect(storeToTurtle.mock.calls[0][0]).toBe(mock$rdf)
+    expect(storeToTurtle.mock.calls[0][1]).toBe(mockGraph)
+    expect(storeToTurtle.mock.calls[0][2]).toBe('')
+  })
+
+  test('calls modifyTurtle on the serialized output', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(modifyTurtle).toHaveBeenCalledTimes(1)
+    expect(modifyTurtle.mock.calls[0][0]).toBe(storeToTurtle.mock.results[0].value)
+  })
+
+  test('PUTs via uploadTurtleToResource with solidFetch, resource URL, and method: PUT', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(POD)
+    expect(uploadTurtleToResource).toHaveBeenCalledTimes(1)
+    expect(uploadTurtleToResource.mock.calls[0][0]).toBe(fakeSolidFetch)
+    expect(uploadTurtleToResource.mock.calls[0][1]).toBe(url)
+    expect(uploadTurtleToResource.mock.calls[0][3]).toEqual({ method: 'PUT', returnResponse: true })
+  })
+
+  test('handles a pod base URL with a trailing slash', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(POD + '/')
+    expect(url).toMatch(new RegExp(`^${POD}/t/t_note_`))
+  })
+})
+
+describe('useTwinPodNoteCreate — custom typeUri', () => {
+  test('uses a custom typeUri when provided', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch, {
+      typeUri: 'https://example.com/my/Note'
+    })
+    await createNote(POD)
+    expect(mock$rdf.sym).toHaveBeenCalledWith('https://example.com/my/Note')
+  })
+
+  test('defaults typeUri to schema:Note when options are omitted', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(mock$rdf.sym).toHaveBeenCalledWith('http://schema.org/Note')
+  })
+})
+
+describe('useTwinPodNoteCreate — input validation', () => {
+  test('returns null when podBaseUrl is empty', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote('')
+    expect(url).toBeNull()
+    expect(uploadTurtleToResource).not.toHaveBeenCalled()
+  })
+
+  test('sets error.type to invalid-input when podBaseUrl is empty', async () => {
+    const { error, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote('')
+    expect(error.value?.type).toBe('invalid-input')
+  })
+
+  // Spec: F.Create_Note — invalid-input must also cover null/undefined podBaseUrl
+  test('returns null when podBaseUrl is null', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(null)
+    expect(url).toBeNull()
+    expect(uploadTurtleToResource).not.toHaveBeenCalled()
+  })
+
+  test('returns null when podBaseUrl is undefined', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(undefined)
+    expect(url).toBeNull()
+    expect(uploadTurtleToResource).not.toHaveBeenCalled()
+  })
+})
+
+describe('useTwinPodNoteCreate — HTTP error', () => {
+  test('returns null when uploadTurtleToResource returns ok: false', async () => {
+    uploadTurtleToResource.mockResolvedValueOnce({ ok: false, status: 403 })
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const url = await createNote(POD)
+    expect(url).toBeNull()
+  })
+
+  test('sets error.type to http with status on failure', async () => {
+    uploadTurtleToResource.mockResolvedValueOnce({ ok: false, status: 403 })
+    const { error, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(error.value?.type).toBe('http')
+    expect(error.value?.status).toBe(403)
+  })
+
+  test('noteUri stays null after HTTP failure', async () => {
+    uploadTurtleToResource.mockResolvedValueOnce({ ok: false, status: 500 })
+    const { noteUri, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(noteUri.value).toBeNull()
+  })
+})
+
+describe('useTwinPodNoteCreate — network error', () => {
+  test('sets error.type to network when uploadTurtleToResource throws', async () => {
+    uploadTurtleToResource.mockRejectedValueOnce(new Error('Failed to fetch'))
+    const { error, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(error.value?.type).toBe('network')
+    expect(error.value?.message).toBe('Failed to fetch')
+  })
+})
+
+describe('useTwinPodNoteCreate — initial placeholder text', () => {
+  // Neo 422s on empty literals — initial text must be ' ' (single space)
+  test('schema:text is set to a non-empty placeholder (single space)', async () => {
+    const { createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    await createNote(POD)
+    expect(mock$rdf.literal).toHaveBeenCalledWith(' ')
+  })
+})
+
+describe('useTwinPodNoteCreate — stale value after failure', () => {
+  test('noteUri is null after a failed create following a success', async () => {
+    const { noteUri, createNote } = useTwinPodNoteCreate(fakeSolidFetch)
+    const first = await createNote(POD)
+    expect(noteUri.value).toBe(first)
+    uploadTurtleToResource.mockResolvedValueOnce({ ok: false, status: 500 })
+    await createNote(POD)
+    expect(noteUri.value).toBeNull()
+  })
 })

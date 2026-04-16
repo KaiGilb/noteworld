@@ -1,6 +1,6 @@
 {
   "name": "@kaigilb/noteworld-notes",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -17,6 +17,9 @@
   },
   "peerDependencies": {
     "vue": "^3.0.0"
+  },
+  "dependencies": {
+    "@kaigilb/twinpod-client": "file:../../../twinpod-client"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

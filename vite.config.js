@@ -22,6 +22,8 @@ export default defineConfig({
   },
 
   test: {
-    environment: 'jsdom'
+    environment: 'jsdom',
+    // Exclude pending tests (future increments) and E2E tests from the unit test run
+    exclude: ['tests/pending/**', 'tests/e2e/**', 'node_modules/**']
   }
 })
