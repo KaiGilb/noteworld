@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.0.1] - 2026-04-18
+### Changed — non-blocking save (S.OptimisticSave / Increment 1)
+- `useTwinPodNoteSave.saveNote` now returns to its caller without awaiting the PUT. The PUT runs in the background; UI state is exposed via `saving` / `saved` / `error` refs. The returned Promise still resolves to the eventual PUT outcome so existing await-style callers keep working.
+- Multiple rapid saves coalesce last-write-wins: at most one PUT in flight per composable instance plus at most one queued. The queued PUT carries the most recent text submitted; intermediate text is dropped.
+- `saving` ref now means "PUT in flight or queued" — it stays true until the queue fully drains.
+- Public API surface unchanged (no new refs, no signature changes).
+
+VDT: `5 - Project/NoteWorld/vdts/NoteWorld-VDT-2026-04-18.md` — S.OptimisticSave delivers V.Speed_Save_Note (6.5 s → ~50 ms perceived).
+
 ## [5.0.0] - 2026-04-17
 ### Breaking — single `ur` namespace, `solidFetch` param removed
 - All four composables now import only `{ ur }` from `@kaigilb/twinpod-client`; no `solidFetch` parameter.

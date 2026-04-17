@@ -8,6 +8,17 @@
  * as triple-quoted literals ("""…"""), and modifyTurtle's replaceAll('"""', '"')
  * breaks them. The text is manually escaped for Turtle single-line string syntax.
  *
+ * Background PUT (S.OptimisticSave / Increment 1):
+ * `saveNote` returns to its caller without awaiting the PUT. The PUT runs in
+ * the background; UI state is exposed via `saving` / `saved` / `error` refs.
+ * The returned Promise still resolves to the eventual PUT outcome so existing
+ * await-style callers keep working.
+ *
+ * Coalescing — last-write-wins: at most one PUT is in flight per composable
+ * instance plus at most one queued. Rapid saves drop their text into the
+ * queued slot, replacing whatever was waiting; only the most recent text is
+ * actually sent in the next PUT.
+ *
  * @param {object} [options]
  * @param {string} [options.predicateUri='http://schema.org/text'] - Predicate for the note body.
  * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
@@ -18,6 +29,9 @@
  *   error:  import('vue').Ref<{type: string, message: string, status?: number}|null>,
  *   saveNote: (noteResourceUrl: string, text: string) => Promise<boolean>
  * }}
+ *
+ * `saving` is true from the moment a save is requested until the queue fully
+ * drains (current PUT settled and no queued PUT remains).
  *
  * Error types: 'invalid-input', 'http', 'network'.
  */
@@ -49,20 +63,12 @@ export function useTwinPodNoteSave({ predicateUri = DEFAULT_TEXT_PREDICATE, type
   const saved = ref(false)
   const error = ref(null)
 
-  async function saveNote(noteResourceUrl, text) {
-    if (!noteResourceUrl) {
-      error.value = { type: 'invalid-input', message: 'noteResourceUrl is required' }
-      return false
-    }
-    if (typeof text !== 'string') {
-      error.value = { type: 'invalid-input', message: 'text must be a string' }
-      return false
-    }
+  // Coalescing queue (closure-scoped — one queue per composable instance).
+  let inflight = false
+  let pending = null              // { url, text, resolvers: [] } — most recent waiting save
+  let currentResolvers = []       // resolvers attached to the in-flight PUT
 
-    saving.value = true
-    saved.value = false
-    error.value = null
-
+  async function runPut(noteResourceUrl, text) {
     try {
       const safeText = text.trim() !== '' ? text : ' '
       const turtle = `@prefix schema: <http://schema.org/> .\n_:t1 a schema:Note ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
@@ -80,9 +86,55 @@ export function useTwinPodNoteSave({ predicateUri = DEFAULT_TEXT_PREDICATE, type
     } catch (e) {
       error.value = { type: 'network', message: e?.message || String(e) }
       return false
-    } finally {
+    }
+  }
+
+  async function drain(noteResourceUrl, text) {
+    const ok = await runPut(noteResourceUrl, text)
+
+    // Resolve everyone whose call rode this PUT (including any coalesced into it).
+    const resolversToCall = currentResolvers
+    currentResolvers = []
+    resolversToCall.forEach(r => r(ok))
+
+    if (pending) {
+      // Drain the queued save without flipping `saving` false in between.
+      const next = pending
+      pending = null
+      currentResolvers = next.resolvers
+      drain(next.url, next.text)
+    } else {
+      inflight = false
       saving.value = false
     }
+  }
+
+  function saveNote(noteResourceUrl, text) {
+    if (!noteResourceUrl) {
+      error.value = { type: 'invalid-input', message: 'noteResourceUrl is required' }
+      return Promise.resolve(false)
+    }
+    if (typeof text !== 'string') {
+      error.value = { type: 'invalid-input', message: 'text must be a string' }
+      return Promise.resolve(false)
+    }
+
+    saving.value = true
+    saved.value = false
+    error.value = null
+
+    return new Promise((resolve) => {
+      if (inflight) {
+        // Last-write-wins: replace any queued save's payload, accumulate resolvers
+        // so every coalesced caller learns the eventual outcome.
+        const carriedResolvers = pending ? pending.resolvers : []
+        pending = { url: noteResourceUrl, text, resolvers: [...carriedResolvers, resolve] }
+        return
+      }
+      inflight = true
+      currentResolvers = [resolve]
+      drain(noteResourceUrl, text)
+    })
   }
 
   return { saving, saved, error, saveNote }

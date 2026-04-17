@@ -199,3 +199,141 @@ describe('useTwinPodNoteSave — HTTP error', () => {
     expect(error.value?.type).toBe('network')
   })
 })
+
+// S.OptimisticSave / Increment 1 — non-blocking save + last-write-wins coalescing.
+// Spec: 5 - Project/NoteWorld/NoteWorld.md (V.Speed_Save_Note)
+// VDT:  5 - Project/NoteWorld/vdts/NoteWorld-VDT-2026-04-18.md (S.OptimisticSave)
+
+describe('useTwinPodNoteSave — background mode (S.OptimisticSave)', () => {
+  test('flips saving=true synchronously, before the PUT resolves', () => {
+    // Hold the PUT open so we can observe the synchronous state.
+    mockUploadTurtleToResource.mockImplementationOnce(() => new Promise(() => {}))
+    const { saving, saveNote } = useTwinPodNoteSave()
+    saveNote(NOTE_URL, 'hello')
+    expect(saving.value).toBe(true)
+  })
+
+  test('returned promise still resolves to PUT outcome (await-style back-compat)', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await expect(saveNote(NOTE_URL, 'hi')).resolves.toBe(true)
+  })
+
+  test('a second call while the first PUT is in flight does not start a new PUT immediately', () => {
+    mockUploadTurtleToResource.mockImplementationOnce(() => new Promise(() => {}))
+    const { saveNote } = useTwinPodNoteSave()
+    saveNote(NOTE_URL, 'first')
+    saveNote(NOTE_URL, 'second')
+    expect(mockUploadTurtleToResource).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useTwinPodNoteSave — last-write-wins coalescing', () => {
+  test('three rapid calls fire only two PUTs (first + coalesced)', async () => {
+    let resolveFirst
+    mockUploadTurtleToResource
+      .mockImplementationOnce(() => new Promise(r => { resolveFirst = r }))
+      .mockResolvedValueOnce({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+
+    const { saveNote } = useTwinPodNoteSave()
+    const p1 = saveNote(NOTE_URL, 'first')
+    const p2 = saveNote(NOTE_URL, 'second')
+    const p3 = saveNote(NOTE_URL, 'third')
+
+    expect(mockUploadTurtleToResource).toHaveBeenCalledTimes(1)
+
+    resolveFirst({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+    await Promise.all([p1, p2, p3])
+
+    expect(mockUploadTurtleToResource).toHaveBeenCalledTimes(2)
+  })
+
+  test('coalesced PUT carries the latest text — earlier queued text is dropped', async () => {
+    let resolveFirst
+    mockUploadTurtleToResource
+      .mockImplementationOnce(() => new Promise(r => { resolveFirst = r }))
+      .mockResolvedValueOnce({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+
+    const { saveNote } = useTwinPodNoteSave()
+    const p1 = saveNote(NOTE_URL, 'first')
+    const p2 = saveNote(NOTE_URL, 'second')
+    const p3 = saveNote(NOTE_URL, 'third')
+
+    resolveFirst({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+    await Promise.all([p1, p2, p3])
+
+    expect(mockUploadTurtleToResource.mock.calls[0][1]).toContain('"first"')
+    expect(mockUploadTurtleToResource.mock.calls[1][1]).toContain('"third"')
+    expect(mockUploadTurtleToResource.mock.calls[1][1]).not.toContain('"second"')
+  })
+
+  test('saving stays true between coalesced PUTs (no flicker)', async () => {
+    let resolveFirst, resolveSecond
+    mockUploadTurtleToResource
+      .mockImplementationOnce(() => new Promise(r => { resolveFirst = r }))
+      .mockImplementationOnce(() => new Promise(r => { resolveSecond = r }))
+
+    const { saving, saveNote } = useTwinPodNoteSave()
+    saveNote(NOTE_URL, 'first')
+    saveNote(NOTE_URL, 'second')
+
+    expect(saving.value).toBe(true)
+
+    resolveFirst({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+    // Yield to a macrotask so every microtask in the drain chain settles.
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(saving.value).toBe(true)
+    expect(mockUploadTurtleToResource).toHaveBeenCalledTimes(2)
+
+    resolveSecond({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(saving.value).toBe(false)
+  })
+
+  test('all coalesced callers receive the final-drain outcome on their returned promise', async () => {
+    let resolveFirst
+    mockUploadTurtleToResource
+      .mockImplementationOnce(() => new Promise(r => { resolveFirst = r }))
+      .mockResolvedValueOnce({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+
+    const { saveNote } = useTwinPodNoteSave()
+    const p1 = saveNote(NOTE_URL, 'first')
+    const p2 = saveNote(NOTE_URL, 'second')
+    const p3 = saveNote(NOTE_URL, 'third')
+
+    resolveFirst({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3])
+
+    expect(r1).toBe(true)   // first PUT succeeded
+    expect(r2).toBe(true)   // coalesced PUT succeeded
+    expect(r3).toBe(true)   // coalesced PUT succeeded
+  })
+
+  test('localStorage cache uses the latest text after coalescing', async () => {
+    let resolveFirst
+    mockUploadTurtleToResource
+      .mockImplementationOnce(() => new Promise(r => { resolveFirst = r }))
+      .mockResolvedValueOnce({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+
+    const { saveNote } = useTwinPodNoteSave()
+    const p1 = saveNote(NOTE_URL, 'first')
+    const p2 = saveNote(NOTE_URL, 'second')
+    const p3 = saveNote(NOTE_URL, 'third')
+
+    resolveFirst({ ok: true, status: 200, headers: null, locationUri: null, response: null })
+    await Promise.all([p1, p2, p3])
+
+    // First PUT cached 'first'; coalesced PUT then cached 'third', overwriting it.
+    expect(localStorageMock.setItem).toHaveBeenLastCalledWith('notetext:' + NOTE_URL, 'third')
+  })
+
+  test('input validation still resolves false synchronously without queuing a PUT', async () => {
+    mockUploadTurtleToResource.mockImplementationOnce(() => new Promise(() => {}))
+    const { saveNote } = useTwinPodNoteSave()
+    saveNote(NOTE_URL, 'inflight')
+    await expect(saveNote('', 'bad')).resolves.toBe(false)
+    // Only the first (held-open) PUT was issued — invalid call did not queue.
+    expect(mockUploadTurtleToResource).toHaveBeenCalledTimes(1)
+  })
+})
