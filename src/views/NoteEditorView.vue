@@ -41,9 +41,11 @@ async function loadCurrent() {
 onMounted(loadCurrent)
 watch(noteUri, loadCurrent)
 
-async function handleSave() {
+function handleSave() {
   if (!noteUri.value) return
-  await saveNote(noteUri.value, text.value)
+  // S.OptimisticSave: fire-and-forget. saveNote returns immediately;
+  // background PUT drives the `saving` / `saved` / `error` refs.
+  saveNote(noteUri.value, text.value)
 }
 
 function goHome() {
@@ -77,7 +79,7 @@ function goHome() {
     <div style="margin-top: 1rem; display: flex; align-items: center; gap: 1rem;">
       <button
         @click="handleSave"
-        :disabled="saving || readLoading || !noteUri"
+        :disabled="readLoading || !noteUri"
         style="padding: 0.5rem 1.5rem; cursor: pointer; min-height: 44px;"
       >
         Save
