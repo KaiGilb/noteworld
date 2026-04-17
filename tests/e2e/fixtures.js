@@ -19,7 +19,7 @@ export const E2E_WEB_ID = 'https://tst-first.demo.systemtwin.com/profile/card#me
 export const TWINPOD_BASE = 'https://tst-first.demo.systemtwin.com'
 export const T_CONTAINER_URL = `${TWINPOD_BASE}/t/`
 // Matches {pod}/t/t_note_{timestamp}_{4-rand-lowercase-alnum}
-export const T_RESOURCE_PATTERN = /^https:\/\/tst-first\.demo\.systemtwin\.com\/t\/t_note_\d+_[a-z0-9]{4}$/
+export const T_RESOURCE_PATTERN = /^https:\/\/tst-first\.demo\.systemtwin\.com\/t\/t_note_\d+_[a-z0-9]{4}/
 
 const E2E_SESSION_SCRIPT = `
   window.__E2E_SESSION__ = {

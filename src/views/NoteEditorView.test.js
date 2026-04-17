@@ -5,11 +5,31 @@ import { mount } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { axe } from 'vitest-axe'
 import { toHaveNoViolations } from 'vitest-axe/matchers.js'
+
+// Mock @kaigilb/noteworld-notes — NoteEditorView calls useTwinPodNoteRead and useTwinPodNoteSave.
+// Without this mock, the real composables import ur from @kaigilb/twinpod-client which requires
+// import.meta.env.VITE_HYPERGRAPH_CODE and inrupt localStorage access, both unavailable in jsdom.
+// Refs are required (not plain objects) so v-if bindings evaluate correctly in templates.
+vi.mock('@kaigilb/noteworld-notes', async () => {
+  const { ref } = await import('vue')
+  return {
+    useTwinPodNoteRead: () => ({
+      loading: ref(false),
+      error: ref(null),
+      loadNote: vi.fn().mockResolvedValue(null)
+    }),
+    useTwinPodNoteSave: () => ({
+      saving: ref(false),
+      saved: ref(false),
+      error: ref(null),
+      saveNote: vi.fn().mockResolvedValue(true)
+    })
+  }
+})
+
 import NoteEditorView from './NoteEditorView.vue'
 
 expect.extend({ toHaveNoViolations })
-
-const mockSolidFetch = vi.fn()
 
 // Spec: F.Create_Note — Success-Criteria: A new empty note is open and ready for text input
 // Spec: V.Speed_Create_Note — editor must be immediately usable after navigation (no async load)
@@ -35,14 +55,14 @@ describe('NoteEditorView', () => {
     test('renders a textarea for note content', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       expect(wrapper.find('textarea').exists()).toBe(true)
     })
 
     test('textarea has a label associated via for/id', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       const label = wrapper.find('label[for="note-content"]')
       const textarea = wrapper.find('#note-content')
       expect(label.exists()).toBe(true)
@@ -52,7 +72,7 @@ describe('NoteEditorView', () => {
     test('renders the Back button', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       expect(wrapper.find('button').exists()).toBe(true)
     })
 
@@ -60,14 +80,14 @@ describe('NoteEditorView', () => {
     test('displays the note URI from the target query param', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       expect(wrapper.text()).toContain(NOTE_URI)
     })
 
     test('does not show note URI when target query param is absent', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor' } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       // No URI text visible — the v-if on noteUri should hide it
       expect(wrapper.find('p').exists()).toBe(false)
     })
@@ -75,7 +95,7 @@ describe('NoteEditorView', () => {
     test('textarea is empty on initial render (new note has no content)', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       expect(wrapper.find('textarea').element.value).toBe('')
     })
 
@@ -87,7 +107,7 @@ describe('NoteEditorView', () => {
     test('Back button navigates to /', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       await wrapper.find('button').trigger('click')
       const { flushPromises } = await import('@vue/test-utils')
       await flushPromises()
@@ -103,7 +123,7 @@ describe('NoteEditorView', () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, {
-        global: { plugins: [router], provide: { solidFetch: mockSolidFetch } },
+        global: { plugins: [router] },
         attachTo: document.body
       })
       const results = await axe(wrapper.element)
@@ -127,7 +147,7 @@ describe('NoteEditorView', () => {
     test('note URI paragraph uses a WCAG AA-compliant inline text color', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       const para = wrapper.find('p')
       expect(para.exists()).toBe(true)
       const style = para.attributes('style') || ''
@@ -173,7 +193,7 @@ describe('NoteEditorView', () => {
     test('Back button declares a min-height of at least 44px in its inline style', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router], provide: { solidFetch: mockSolidFetch } } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       const button = wrapper.find('button')
       const style = button.attributes('style') || ''
       const match = style.match(/min-height:\s*([\d.]+)(px|rem)/)

@@ -52,9 +52,7 @@ function makeProvide({
   webId = 'https://pod.example.com/profile/card#me',
   logoutFn = vi.fn(),
   loading = false,
-  error = null,
-  hyperFetch = vi.fn(),
-  solidFetch = vi.fn()
+  error = null
 } = {}) {
   return {
     auth: {
@@ -62,9 +60,7 @@ function makeProvide({
       logout: logoutFn,
       loading: ref(loading),
       error: ref(error)
-    },
-    hyperFetch,
-    solidFetch
+    }
   }
 }
 

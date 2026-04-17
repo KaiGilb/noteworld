@@ -14,13 +14,12 @@
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { ref, computed, inject, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTwinPodNoteSave, useTwinPodNoteRead } from '@kaigilb/noteworld-notes'
 
 const route = useRoute()
 const router = useRouter()
-const solidFetch = inject('solidFetch')
 
 const noteUri = computed(() => {
   const raw = route.query.target ?? null
@@ -30,8 +29,8 @@ const noteUri = computed(() => {
 
 const text = ref('')
 
-const { loading: readLoading, error: readError, loadNote } = useTwinPodNoteRead(solidFetch)
-const { saving, saved, error: saveError, saveNote } = useTwinPodNoteSave(solidFetch)
+const { loading: readLoading, error: readError, loadNote } = useTwinPodNoteRead()
+const { saving, saved, error: saveError, saveNote } = useTwinPodNoteSave()
 
 async function loadCurrent() {
   if (!noteUri.value) return
@@ -88,7 +87,7 @@ function goHome() {
       <span v-else-if="saved" role="status" style="color: #060;">Saved</span>
     </div>
 
-    <p v-if="readError" role="alert" style="color: #c00; margin-top: 0.5rem;">{{ readError.message }}</p>
+    <p v-if="readError && readError.type !== 'not-found'" role="alert" style="color: #c00; margin-top: 0.5rem;">{{ readError.message }}</p>
     <p v-if="saveError" role="alert" style="color: #c00; margin-top: 0.5rem;">{{ saveError.message }}</p>
   </main>
 </template>

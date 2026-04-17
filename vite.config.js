@@ -3,6 +3,11 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
+  server: {
+    watch: {
+      ignored: ['!**/twinpod-client/src/**']
+    }
+  },
   resolve: {
     preserveSymlinks: true,
     dedupe: ['@kaigilb/twinpod-client', 'rdflib'],

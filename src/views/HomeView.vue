@@ -12,13 +12,18 @@
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { inject, onMounted } from 'vue'
+import { inject, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useTwinPodNoteCreate, useTwinPodNoteSearch } from '@kaigilb/noteworld-notes'
+import { ur } from '@kaigilb/twinpod-client'
+import { useTwinPodNoteCreate, useTwinPodNoteSearch, useTwinPodNotePreviews } from '@kaigilb/noteworld-notes'
 
 const { webId, logout, loading, error } = inject('auth')
-const solidFetch = inject('solidFetch')
 const router = useRouter()
+
+// --- Pod discovery ---
+
+// Resolved from the authenticated WebID on mount; all TwinPod calls wait for this.
+const podRoot = ref(null)
 
 // --- Logout ---
 
@@ -29,10 +34,12 @@ async function handleLogout() {
 
 // --- New Note (F.Create_Note) ---
 
-const { loading: noteLoading, error: noteError, createNote } = useTwinPodNoteCreate(solidFetch)
+const { loading: noteLoading, error: noteError, createNote } = useTwinPodNoteCreate()
 
 async function handleNewNote() {
-  const uri = await createNote(import.meta.env.VITE_TWINPOD_URL)
+  if (!podRoot.value) return
+
+  const uri = await createNote(podRoot.value)
 
   if (uri) {
     router.push({
@@ -48,11 +55,27 @@ async function handleNewNote() {
 
 // --- Note List (F.Find_Note) ---
 
-const { notes, loading: searchLoading, error: searchError, searchNotes } = useTwinPodNoteSearch(solidFetch)
+const { notes, loading: searchLoading, error: searchError, searchNotes } = useTwinPodNoteSearch()
+const { previews, loadPreviews } = useTwinPodNotePreviews()
 
-onMounted(() => {
-  searchNotes(import.meta.env.VITE_TWINPOD_URL)
+onMounted(async () => {
+  // Discover the user's actual pod root before any TwinPod calls.
+  // ur.findPodRoots checks five predicates (pim:storage, foaf:member, etc.)
+  // so it works for any pod URL, not just the one in .env.
+  const roots = await ur.findPodRoots(webId.value)
+  podRoot.value = roots[0] ?? null
+
+  if (!podRoot.value) return
+
+  const found = await searchNotes(podRoot.value)
+  if (found.length > 0) loadPreviews(found.map(n => n.uri))
 })
+
+function noteDate(uri) {
+  const match = uri.match(/t_note_(\d+)/)
+  if (!match) return ''
+  return new Date(Number(match[1])).toLocaleString()
+}
 
 function openNote(uri) {
   router.push({
@@ -78,7 +101,7 @@ function openNote(uri) {
     <!-- Spec: F.Create_Note — user can create a new note from the home screen -->
     <button
       @click="handleNewNote"
-      :disabled="noteLoading"
+      :disabled="noteLoading || !podRoot"
       style="padding: 0.5rem 1.5rem; cursor: pointer; margin-right: 0.75rem; min-height: 44px;"
     >
       New Note
@@ -115,9 +138,10 @@ function openNote(uri) {
         <li v-for="note in notes" :key="note.uri" style="margin-bottom: 0.5rem;">
           <button
             @click="openNote(note.uri)"
-            style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid #ccc; background: #fafafa; font-size: 0.9rem; word-break: break-all; min-height: 44px;"
+            style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid #ccc; background: #fafafa; font-size: 0.9rem; min-height: 44px;"
           >
-            {{ note.uri }}
+            <span v-if="previews[note.uri]" style="display: block;">{{ previews[note.uri] }}</span>
+            <span style="display: block; font-size: 0.75rem; color: #888;">{{ noteDate(note.uri) }}</span>
           </button>
         </li>
       </ul>

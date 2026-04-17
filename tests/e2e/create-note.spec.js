@@ -165,3 +165,29 @@ test.describe('F.Create_Note — error states', () => {
   })
 
 })
+
+// Spec: hyperFetch pagination fix — T_RESOURCE_PATTERN must match URLs with query
+// strings appended (no $ anchor), because before the pagination fix, hyperFetch
+// would append ?start=0&rows=20 to PUT URLs, causing page.route() to miss the match.
+// The $ anchor was removed from T_RESOURCE_PATTERN to ensure route matching stays
+// robust against any future query-string additions.
+test.describe('T_RESOURCE_PATTERN — regex contract', () => {
+
+  test('matches a clean /t/t_note_ URL (no query string)', () => {
+    const url = 'https://tst-first.demo.systemtwin.com/t/t_note_1776287762997_2jw7'
+    expect(url).toMatch(T_RESOURCE_PATTERN)
+  })
+
+  test('matches a /t/t_note_ URL with query string appended (no $ anchor)', () => {
+    // Before the pagination fix, hyperFetch would append ?start=0&rows=20 to all GETs.
+    // The $ anchor was removed so page.route() still intercepts these URLs.
+    const urlWithParams = 'https://tst-first.demo.systemtwin.com/t/t_note_1776287762997_2jw7?start=0&rows=20'
+    expect(urlWithParams).toMatch(T_RESOURCE_PATTERN)
+  })
+
+  test('does not match a non-t_note_ URL', () => {
+    const url = 'https://tst-first.demo.systemtwin.com/search/note'
+    expect(url).not.toMatch(T_RESOURCE_PATTERN)
+  })
+
+})

@@ -9,11 +9,8 @@
  *    when there is no incoming auth code in the URL).
  * 2. Redirect to /login when not authenticated; redirect to / when already
  *    authenticated and arriving at /login.
- * 3. Provide 'auth' and 'hyperFetch' to all child views via inject so they
- *    never need to touch the session directly.
- *
- * hyperFetch is built from @kaigilb/twinpod-client's createHyperFetch factory, bound to
- * the Session returned by useTwinPodAuth. It adds TwinPod-required headers automatically.
+ * 3. Provide 'auth' to all child views via inject so they never need to call
+ *    useTwinPodAuth separately.
  *
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
@@ -21,7 +18,6 @@
 import { provide, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useTwinPodAuth } from '@kaigilb/twinpod-auth'
-import { createHyperFetch, createSolidFetch } from '@kaigilb/twinpod-client'
 
 const router = useRouter()
 const route = useRoute()
@@ -35,17 +31,11 @@ const { isLoggedIn, webId, loading, error, session, handleRedirect, login, logou
     _sessionOverride: import.meta.env.DEV ? (window.__E2E_SESSION__ ?? null) : null
   })
 
-// Build the authenticated hyperFetch using our Session. useTwinPodAuth manages its own
-// Session singleton (not @inrupt's getDefaultSession), so we bind session.fetch explicitly.
-// createHyperFetch layers on pagination, Accept: text/turtle, Cache-Control, and hypergraph.
-const hyperFetch = createHyperFetch({ fetch: (url, init) => session.fetch(url, init) })
-const solidFetch = createSolidFetch({ fetch: (url, init) => session.fetch(url, init) })
-
-provide('hyperFetch', hyperFetch)
-provide('solidFetch', solidFetch)
+// Bridge: ur.hyperFetch reads window.solid.session at call time. rdfStore.js installs its
+// own session on startup; overwrite it here so all ur.* calls use the auth session's fetch.
+if (window.solid) window.solid.session = session
 
 if (import.meta.env.DEV) {
-  window.__solidFetch = solidFetch
   window.__session = session
 }
 

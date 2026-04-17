@@ -32,13 +32,9 @@ vi.mock('@kaigilb/twinpod-auth', () => ({
   })
 }))
 
-// Mock @kaigilb/twinpod-client — App.vue imports createHyperFetch from it and the package's
-// rdfStore entry pulls in rdflib (a CJS package with circular deps that break Vitest's ESM
-// environment). These tests only verify routing and auth behaviour, so a stub is sufficient.
-vi.mock('@kaigilb/twinpod-client', () => ({
-  createHyperFetch: () => vi.fn(),
-  createSolidFetch: () => vi.fn()
-}))
+// Mock @kaigilb/twinpod-client — the package pulls in rdflib (a CJS package with circular deps
+// that break Vitest's ESM environment). These tests only verify routing and auth behaviour.
+vi.mock('@kaigilb/twinpod-client', () => ({ ur: {} }))
 
 import App from './App.vue'
 
@@ -177,30 +173,6 @@ describe('App.vue — routing guard', () => {
     expect(router.currentRoute.value.path).toBe('/app')
   })
 
-  // Spec: F.NoteWorld — hyperFetch must be provided to child components so TwinPod composables
-  // can make authenticated requests without touching the session directly.
-  test('provides hyperFetch to child components', async () => {
-    const router = makeRouter('/')
-    await router.push('/')
-    let injectedFetch
-    const ChildConsumer = {
-      template: '<div />',
-      inject: ['hyperFetch'],
-      mounted() { injectedFetch = this.hyperFetch }
-    }
-    // Mount App with a child that injects hyperFetch
-    const wrapper = mount(App, {
-      global: {
-        plugins: [router],
-        // Override router-view to render our consumer so we can verify the injection
-        stubs: { RouterView: ChildConsumer }
-      }
-    })
-    await flushPromises()
-    // hyperFetch must be a function
-    expect(typeof injectedFetch).toBe('function')
-  })
-
   // --- Gap tests written by VATester ---
 
   // Spec gap: when the browser lands on `/?code=...&iss=...` (the OIDC redirect return),
@@ -240,6 +212,35 @@ describe('App.vue — routing guard', () => {
     mount(App, { global: { plugins: [router] } })
     await flushPromises()
     expect(sessionStorage.getItem('noteworld:postLoginRedirect')).toBeNull()
+  })
+
+  // --- Gap tests written by VATester (session bridge increment) ---
+
+  // Spec: App.vue session bridge fix — when window.solid exists, App.vue must overwrite
+  // window.solid.session with the useTwinPodAuth session so ur.hyperFetch (which reads
+  // window.solid.session.fetch at call time) uses the authenticated fetch and not the
+  // unauthenticated default installed by rdfStore.js on startup.
+  test('sets window.solid.session to the auth session when window.solid exists', async () => {
+    const fakeSolid = { session: null }
+    Object.defineProperty(window, 'solid', { value: fakeSolid, configurable: true, writable: true })
+    const router = makeRouter()
+    await router.push('/')
+    mount(App, { global: { plugins: [router] } })
+    // The bridge runs synchronously in <script setup>, before any async work.
+    expect(window.solid.session).toBe(mockSession)
+    // Restore — prevent leaking into later tests.
+    delete window.solid
+  })
+
+  // Guard: when window.solid does not exist the bridge must not throw. The package's
+  // rdfStore.js installs window.solid on startup, but in test/SSR environments it may be
+  // absent; App.vue guards with `if (window.solid)`.
+  test('does not throw when window.solid is undefined', async () => {
+    // Ensure window.solid is absent for this test.
+    delete window.solid
+    const router = makeRouter()
+    await router.push('/')
+    expect(() => mount(App, { global: { plugins: [router] } })).not.toThrow()
   })
 
 })
