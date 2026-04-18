@@ -9,8 +9,10 @@
  * F.Create_Note: creates a new note and navigates to the editor.
  * F.Find_Note:   lists existing notes via useTwinPodNoteSearch on mount.
  *
- * Pod base URL comes from import.meta.env.VITE_TWINPOD_URL — the composables
- * append the appropriate container path internally.
+ * Pod base URL comes from the 'podRoot' inject, which App.vue resolves via
+ * ur.findPodRoots(webId) after the OIDC redirect completes. We never read
+ * VITE_TWINPOD_URL directly here — login is the pod switch (Kai: "I will
+ * frequently want to start over with a new twinpod").
  *
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
@@ -20,9 +22,8 @@ import { useRouter } from 'vue-router'
 import { useTwinPodNoteCreate, useTwinPodNoteSearch, useTwinPodNotePreviews } from '@kaigilb/noteworld-notes'
 
 const { webId, logout, loading, error } = inject('auth')
+const podRoot = inject('podRoot')
 const router = useRouter()
-
-const podBaseUrl = import.meta.env.VITE_TWINPOD_URL
 
 // --- Logout ---
 
@@ -41,10 +42,10 @@ function handleNewNote() {
   // first `await`, so we can navigate immediately. The PUT runs in the
   // background; its outcome surfaces via the composable's `creating` / error
   // refs (not awaited here).
-  createNote(podBaseUrl)
+  createNote(podRoot.value)
 
   const uri = pendingUri.value
-  if (!uri) return   // e.g. invalid podBaseUrl — createNote returned without minting
+  if (!uri) return   // e.g. empty podRoot — createNote returned without minting
 
   // `new=1` signals NoteEditorView to skip its initial loadNote (the resource
   // does not yet exist on the server). The flag is stripped by the editor
@@ -68,9 +69,15 @@ const { previews, loadPreviews } = useTwinPodNotePreviews()
 // Search synchronously on mount so tests that assert "searchNotes called on
 // mount" pass without awaiting microtasks. The composable itself is async
 // internally; the call-site does not need to await for the assertion to land.
-searchNotes(podBaseUrl).then((found) => {
-  if (found && found.length > 0) loadPreviews(found.map(n => n.uri))
-})
+// Guard the call with podRoot truthiness — App.vue resolves podRoot before
+// flipping initialAuthDone, so this branch should always hit, but if
+// discovery + fallback both fail we skip the search rather than firing a
+// request against an empty URL.
+if (podRoot.value) {
+  searchNotes(podRoot.value).then((found) => {
+    if (found && found.length > 0) loadPreviews(found.map(n => n.uri))
+  })
+}
 
 function noteLabel(uri) {
   // Last path segment — e.g. `t_note_1` from `https://pod/t/t_note_1`.

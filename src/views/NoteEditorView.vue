@@ -17,10 +17,12 @@
  *   strip the flag so subsequent reloads follow the normal load path.
  *
  * Auto-save (S.OptimisticSave / VDT notes 9 + 10):
- *   Every edit schedules a debounced save 1s after the last keystroke. The
+ *   Every edit schedules a debounced save 2s after the last keystroke. The
  *   `visibilitychange → hidden` event flushes synchronously so nothing is
  *   lost when the tab/window loses focus. Unmounting clears the debounce
  *   timer. `useTwinPodNoteSave` handles last-write-wins coalescing server-side.
+ *   2s (not 1s) is deliberate: the real TwinPod server takes ~3s per write,
+ *   so sub-2s debounce shows "Saving…" almost continuously while typing.
  *
  * URI state (URI State Standard — URI_STATE_01, URI_STATE_04):
  *   /app?app=NoteWorld&navigator=editor&target=<percent-encoded note URI>[&new=1]
@@ -37,7 +39,7 @@ const router = useRouter()
 
 // Debounce + status-fade tuning — kept as constants so tests can reason about
 // them and a future UX tweak is a one-line change.
-const SAVE_DEBOUNCE_MS = 1000
+const SAVE_DEBOUNCE_MS = 2000
 const STATUS_FADE_MS = 1500
 
 // --- Route-derived state ---

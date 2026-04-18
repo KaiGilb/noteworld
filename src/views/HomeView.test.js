@@ -48,13 +48,11 @@ vi.mock('@kaigilb/noteworld-notes', () => ({
   })
 }))
 
-// HomeView also imports `ur` from @kaigilb/twinpod-client and calls
-// ur.findPodRoots(webId) onMounted. Stub it so tests don't hit real HTTP.
-vi.mock('@kaigilb/twinpod-client', () => ({
-  ur: {
-    findPodRoots: vi.fn().mockResolvedValue(['https://tst-first.demo.systemtwin.com'])
-  }
-}))
+// HomeView no longer imports @kaigilb/twinpod-client directly — pod
+// discovery now runs in App.vue and the resolved root is `provide`d as
+// 'podRoot'. The mock stays as a safety net in case a transitive import
+// pulls in rdflib (CJS + circular deps break Vitest's ESM environment).
+vi.mock('@kaigilb/twinpod-client', () => ({ ur: {} }))
 
 import HomeView from './HomeView.vue'
 
@@ -74,7 +72,11 @@ function makeProvide({
   webId = 'https://pod.example.com/profile/card#me',
   logoutFn = vi.fn(),
   loading = false,
-  error = null
+  error = null,
+  // App.vue resolves this via ur.findPodRoots and provides it; HomeView reads
+  // it as an injected ref. Default to a realistic URL so createNote/searchNotes
+  // calls in existing tests keep their existing assertion surface.
+  podRoot = 'https://tst-first.demo.systemtwin.com'
 } = {}) {
   return {
     auth: {
@@ -82,7 +84,8 @@ function makeProvide({
       logout: logoutFn,
       loading: ref(loading),
       error: ref(error)
-    }
+    },
+    podRoot: ref(podRoot)
   }
 }
 
@@ -202,20 +205,23 @@ describe('HomeView', () => {
       mockPendingUri.value = null
     })
 
-    test('passes VITE_TWINPOD_URL as podBaseUrl to createNote', async () => {
+    // Spec: F.Create_Note — createNote receives the injected podRoot, NOT the
+    // env var. This is the pod-switching contract: HomeView must never read
+    // VITE_TWINPOD_URL directly; App.vue alone resolves the active pod.
+    test('passes the injected podRoot as podBaseUrl to createNote', async () => {
       mockCreateNote.mockClear()
       mockCreateNote.mockImplementation(() => {
-        mockPendingUri.value = 'https://tst-first.demo.systemtwin.com/t/t_note_1'
-        return Promise.resolve('https://tst-first.demo.systemtwin.com/t/t_note_1')
+        mockPendingUri.value = 'https://tst-ia2.demo.systemtwin.com/t/t_note_1'
+        return Promise.resolve('https://tst-ia2.demo.systemtwin.com/t/t_note_1')
       })
       const wrapper = mount(HomeView, {
-        global: { plugins: [router], provide: makeProvide() }
+        global: {
+          plugins: [router],
+          provide: makeProvide({ podRoot: 'https://tst-ia2.demo.systemtwin.com' })
+        }
       })
       await findButton(wrapper, 'New Note').trigger('click')
-      // createNote is called with VITE_TWINPOD_URL (the pod base URL — no trailing slash or path).
-      // The composable handles appending /t/ internally.
-      // In the test environment import.meta.env.VITE_TWINPOD_URL is undefined — verify it was called once.
-      expect(mockCreateNote).toHaveBeenCalledOnce()
+      expect(mockCreateNote).toHaveBeenCalledWith('https://tst-ia2.demo.systemtwin.com')
       mockPendingUri.value = null
     })
 
@@ -503,6 +509,33 @@ describe('HomeView', () => {
         global: { plugins: [router], provide: makeProvide() }
       })
       expect(mockSearchNotes).toHaveBeenCalledOnce()
+    })
+
+    // Spec: F.Find_Note + pod-switch contract — searchNotes must receive the
+    // injected podRoot, not the VITE_TWINPOD_URL env var.
+    test('passes the injected podRoot to searchNotes', () => {
+      mockSearchNotes.mockClear()
+      mount(HomeView, {
+        global: {
+          plugins: [router],
+          provide: makeProvide({ podRoot: 'https://tst-ia2.demo.systemtwin.com' })
+        }
+      })
+      expect(mockSearchNotes).toHaveBeenCalledWith('https://tst-ia2.demo.systemtwin.com')
+    })
+
+    // Guard: if App.vue's discovery + fallbacks all failed, podRoot is ''.
+    // Firing a search against an empty URL would hit the app origin (dev
+    // server) with a garbage request. Skip instead.
+    test('does not call searchNotes when podRoot is empty', () => {
+      mockSearchNotes.mockClear()
+      mount(HomeView, {
+        global: {
+          plugins: [router],
+          provide: makeProvide({ podRoot: '' })
+        }
+      })
+      expect(mockSearchNotes).not.toHaveBeenCalled()
     })
 
     test('shows "Loading notes…" when searchLoading is true', () => {

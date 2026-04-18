@@ -11,6 +11,11 @@
  *    authenticated and arriving at /login.
  * 3. Provide 'auth' to all child views via inject so they never need to call
  *    useTwinPodAuth separately.
+ * 4. Discover the pod root via ur.findPodRoots(webId) and provide it as
+ *    'podRoot'. The pod is whatever the WebID says it is — we never ask the
+ *    user to tell us which pod they're on (that's the TwinPod's job during
+ *    OIDC). Fallback: WebID origin, used when the profile has no
+ *    pim:storage / foaf:member links we can parse.
  *
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
@@ -18,6 +23,7 @@
 import { provide, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useTwinPodAuth } from '@kaigilb/twinpod-auth'
+import { ur } from '@kaigilb/twinpod-client'
 
 const router = useRouter()
 const route = useRoute()
@@ -37,6 +43,36 @@ if (window.solid) window.solid.session = session
 
 if (import.meta.env.DEV) {
   window.__session = session
+}
+
+// --- Pod root (discovery-driven) ---
+//
+// After the OIDC round-trip we look up the WebID profile with
+// `ur.findPodRoots` and pick the first root (Kai: "silently pick first pod
+// root"). If discovery returns nothing (older profile, offline, parse error)
+// we fall back to the origin of the WebID itself. Views inject `podRoot`
+// instead of reading VITE_TWINPOD_URL so the app always targets the pod the
+// user actually logged in to — even if it differs from the env default.
+const podRoot = ref('')
+provide('podRoot', podRoot)
+
+function originOf(url) {
+  try { return new URL(url).origin } catch { return '' }
+}
+
+async function resolvePodRoot() {
+  if (!webId.value) return ''
+  try {
+    const roots = await ur.findPodRoots(webId.value)
+    if (roots && roots.length > 0) {
+      // Strip trailing slash so downstream composables can append `/t/...`
+      // without doubling up.
+      return roots[0].replace(/\/+$/, '')
+    }
+  } catch { /* fall through */ }
+  // Fallback: WebID origin (e.g. `https://tst-ia2.demo.systemtwin.com/i`
+  // → `https://tst-ia2.demo.systemtwin.com`).
+  return originOf(webId.value)
 }
 
 // Provide auth state and actions so views never need to call useTwinPodAuth separately.
@@ -74,6 +110,15 @@ onMounted(async () => {
   }
 
   await handleRedirect()
+
+  // Discover the pod root before flipping `initialAuthDone`. Downstream views
+  // (HomeView search, NoteEditorView read) inject `podRoot` and fire on mount;
+  // resolving first avoids a race where they run with an empty string. Must
+  // not block navigation on failure — `resolvePodRoot` never throws.
+  if (isLoggedIn.value) {
+    podRoot.value = await resolvePodRoot()
+  }
+
   initialAuthDone.value = true
 
   if (isLoggedIn.value) {

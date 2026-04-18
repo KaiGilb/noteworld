@@ -188,8 +188,11 @@ describe('NoteEditorView', () => {
 
   describe('auto-save (V.Speed_Save_Note + VDT note 9)', () => {
 
-    // Typing debounces for 1s, then fires a single saveNote call.
-    test('schedules saveNote ~1s after a keystroke', async () => {
+    // Typing debounces for 2s (VDT 2026-04-18 note 9 — bumped from 1s because
+    // the real TwinPod server takes ~3s per write; sub-2s debounce keeps the
+    // "Saving…" indicator on continuously while typing), then fires a single
+    // saveNote call.
+    test('schedules saveNote ~2s after a keystroke', async () => {
       vi.useFakeTimers()
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
@@ -201,9 +204,34 @@ describe('NoteEditorView', () => {
       // Not yet — debounce still pending.
       expect(mockSaveNote).not.toHaveBeenCalled()
 
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(2000)
       expect(mockSaveNote).toHaveBeenCalledWith(NOTE_URI, 'hello')
       expect(mockSaveNote).toHaveBeenCalledTimes(1)
+    })
+
+    // --- Gap test written by VATester (5.1.1 debounce bump) ---
+    //
+    // Spec: V.Speed_Save_Note + VDT note 9 — debounce is 2000ms (bumped from
+    // 1000ms in 5.1.1 so "Saving…" doesn't stay on continuously while typing
+    // against the real ~3s-per-write server). Locking the "1999ms must NOT
+    // fire" side of the boundary keeps a future contributor from silently
+    // reverting the bump — shortening the debounce again would break
+    // V.Speed_Save_Note flicker behaviour without breaking any existing
+    // happy-path assertion.
+    test('does NOT fire saveNote at 1999ms (regression guard for 2000ms debounce)', async () => {
+      vi.useFakeTimers()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('textarea').setValue('hello')
+      vi.advanceTimersByTime(1999)
+      expect(mockSaveNote).not.toHaveBeenCalled()
+
+      // One more ms tips it over — confirms 2000 is the actual boundary.
+      vi.advanceTimersByTime(1)
+      expect(mockSaveNote).toHaveBeenCalledWith(NOTE_URI, 'hello')
     })
 
     // Rapid keystrokes collapse into a single save.
@@ -215,16 +243,17 @@ describe('NoteEditorView', () => {
       await flushPromises()
 
       const textarea = wrapper.find('textarea')
+      // Three keystrokes 1000ms apart — each resets the 2000ms debounce.
       await textarea.setValue('a')
-      vi.advanceTimersByTime(500)
+      vi.advanceTimersByTime(1000)
       await textarea.setValue('ab')
-      vi.advanceTimersByTime(500)
+      vi.advanceTimersByTime(1000)
       await textarea.setValue('abc')
-      vi.advanceTimersByTime(500)
+      vi.advanceTimersByTime(1000)
       // Each keystroke reset the timer; no save yet.
       expect(mockSaveNote).not.toHaveBeenCalled()
 
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(2000)
       expect(mockSaveNote).toHaveBeenCalledTimes(1)
       expect(mockSaveNote).toHaveBeenLastCalledWith(NOTE_URI, 'abc')
     })

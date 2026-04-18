@@ -33,8 +33,15 @@ vi.mock('@kaigilb/twinpod-auth', () => ({
 }))
 
 // Mock @kaigilb/twinpod-client — the package pulls in rdflib (a CJS package with circular deps
-// that break Vitest's ESM environment). These tests only verify routing and auth behaviour.
-vi.mock('@kaigilb/twinpod-client', () => ({ ur: {} }))
+// that break Vitest's ESM environment). App.vue calls `ur.findPodRoots(webId)` after the
+// OIDC redirect resolves, so the mock must expose that surface for every test, defaulting to
+// a realistic pod root so the "logged-in → pushes to /" paths don't stall waiting on discovery.
+const mockFindPodRoots = vi.fn().mockResolvedValue(['https://tst-first.demo.systemtwin.com'])
+vi.mock('@kaigilb/twinpod-client', () => ({
+  ur: {
+    findPodRoots: (...args) => mockFindPodRoots(...args)
+  }
+}))
 
 import App from './App.vue'
 
@@ -53,11 +60,14 @@ describe('App.vue — routing guard', () => {
 
   beforeEach(() => {
     mockHandleRedirect.mockClear()
+    mockFindPodRoots.mockClear()
+    mockFindPodRoots.mockResolvedValue(['https://tst-first.demo.systemtwin.com'])
     mockIsLoggedIn.value = false
     mockWebId.value = null
     mockLoading.value = false
     mockError.value = null
     sessionStorage.clear()
+    try { localStorage.removeItem('noteworld:lastPodUrl') } catch { /* ignore */ }
   })
 
   // Spec: F.NoteWorld — any route visited without a session must redirect to /login
@@ -241,6 +251,112 @@ describe('App.vue — routing guard', () => {
     const router = makeRouter()
     await router.push('/')
     expect(() => mount(App, { global: { plugins: [router] } })).not.toThrow()
+  })
+
+  // --- Pod-root discovery (2026-04-18 pod-switch contract) ---
+  //
+  // Login is the pod switch: the user types a TwinPod URL on LoginView,
+  // completes OIDC, and App.vue discovers the authoritative pod root via
+  // `ur.findPodRoots(webId)`. The resolved root is `provide`d as 'podRoot'
+  // so views don't read VITE_TWINPOD_URL directly.
+
+  describe('pod-root discovery', () => {
+
+    test('calls ur.findPodRoots with the WebID after login', async () => {
+      mockIsLoggedIn.value = true
+      mockWebId.value = 'https://pod.example.com/profile/card#me'
+      const router = makeRouter()
+      await router.push('/')
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(mockFindPodRoots).toHaveBeenCalledWith('https://pod.example.com/profile/card#me')
+    })
+
+    test('does not call ur.findPodRoots when the user is not logged in', async () => {
+      mockIsLoggedIn.value = false
+      const router = makeRouter()
+      await router.push('/login')
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(mockFindPodRoots).not.toHaveBeenCalled()
+    })
+
+    // Spec: silently pick the first pod root when multiple are returned (Kai: "a").
+    test('provides the first pod root (trailing slash stripped) as podRoot', async () => {
+      mockIsLoggedIn.value = true
+      mockWebId.value = 'https://pod.example.com/profile/card#me'
+      mockFindPodRoots.mockResolvedValue([
+        'https://tst-ia2.demo.systemtwin.com/',
+        'https://other-pod.example.com/'
+      ])
+      let capturedPodRoot = null
+      const probe = {
+        template: '<div>probe</div>',
+        inject: ['podRoot'],
+        mounted() { capturedPodRoot = this.podRoot }
+      }
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [
+          { path: '/', component: probe },
+          { path: '/login', component: { template: '<div />' } },
+          { path: '/app', component: { template: '<div />' } }
+        ]
+      })
+      await router.push('/')
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(capturedPodRoot).toBe('https://tst-ia2.demo.systemtwin.com')
+    })
+
+    // Fallback: discovery returns empty → WebID origin.
+    test('falls back to WebID origin when findPodRoots returns empty', async () => {
+      mockIsLoggedIn.value = true
+      mockWebId.value = 'https://pod.example.com/profile/card#me'
+      mockFindPodRoots.mockResolvedValue([])
+      let capturedPodRoot = null
+      const probe = {
+        template: '<div>probe</div>',
+        inject: ['podRoot'],
+        mounted() { capturedPodRoot = this.podRoot }
+      }
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [
+          { path: '/', component: probe },
+          { path: '/login', component: { template: '<div />' } }
+        ]
+      })
+      await router.push('/')
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(capturedPodRoot).toBe('https://pod.example.com')
+    })
+
+    // Resilience: findPodRoots throws → WebID origin, no crash.
+    test('does not throw when findPodRoots rejects; falls back to WebID origin', async () => {
+      mockIsLoggedIn.value = true
+      mockWebId.value = 'https://tst-ia2.demo.systemtwin.com/i'
+      mockFindPodRoots.mockRejectedValue(new Error('network'))
+      let capturedPodRoot = null
+      const probe = {
+        template: '<div>probe</div>',
+        inject: ['podRoot'],
+        mounted() { capturedPodRoot = this.podRoot }
+      }
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [
+          { path: '/', component: probe },
+          { path: '/login', component: { template: '<div />' } }
+        ]
+      })
+      await router.push('/')
+      mount(App, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(capturedPodRoot).toBe('https://tst-ia2.demo.systemtwin.com')
+    })
+
   })
 
 })
