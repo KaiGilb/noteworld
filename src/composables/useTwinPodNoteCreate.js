@@ -9,15 +9,37 @@
  * The resource URI is client-minted as `{podRoot}/t/t_note_{ts}_{rand4}`.
  * A blank node subject carries `rdf:type schema:Note` and `schema:text " "`.
  *
+ * Optimistic create (S.OptimisticCreate / Increment 2):
+ * `createNote` mints the URI and flips `creating=true` / `pendingUri` synchronously,
+ * BEFORE the first `await`. Callers that do not await can read `pendingUri.value`
+ * immediately and navigate while the PUT runs in the background. The returned
+ * Promise still resolves to the confirmed URI (or null on failure) so existing
+ * await-style callers keep working.
+ *
+ * Callers gating their own behaviour on the create PUT (e.g. deciding whether
+ * to skip an initial read) should use the URL query flag `?new=1` set at
+ * navigation time — the editor then skips its `loadNote` until the user saves.
+ * This increment deliberately does NOT expose a cross-view pending registry;
+ * coordination is via the URL only.
+ *
  * @param {object} [options]
  * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
  *
  * @returns {{
- *   noteUri: import('vue').Ref<string|null>,
- *   loading: import('vue').Ref<boolean>,
- *   error:   import('vue').Ref<{type: string, message: string, status?: number}|null>,
+ *   pendingUri: import('vue').Ref<string|null>,
+ *   noteUri:    import('vue').Ref<string|null>,
+ *   creating:   import('vue').Ref<boolean>,
+ *   loading:    import('vue').Ref<boolean>,
+ *   error:      import('vue').Ref<{type: string, message: string, status?: number}|null>,
  *   createNote: (podBaseUrl: string) => Promise<string|null>
  * }}
+ *
+ * `pendingUri` is the minted URI the moment createNote is called (before the PUT).
+ * `noteUri` is populated only after the PUT succeeds — it is the "server-confirmed"
+ * URI. Existing callers that read `noteUri` keep their previous semantics.
+ * `creating` is true from the synchronous mint until the PUT settles (success or fail).
+ * `loading` is retained as an alias of `creating` for back-compatibility with
+ * callers wired up before the optimistic refactor.
  *
  * Error types: 'invalid-input', 'http', 'network'.
  */
@@ -34,26 +56,17 @@ function mintResourceId() {
 }
 
 export function useTwinPodNoteCreate({ typeUri = DEFAULT_TYPE_URI } = {}) {
+  const pendingUri = ref(null)
   const noteUri = ref(null)
+  const creating = ref(false)
   const loading = ref(false)
   const error = ref(null)
 
-  async function createNote(podBaseUrl) {
-    if (!podBaseUrl) {
-      error.value = { type: 'invalid-input', message: 'podBaseUrl is required' }
-      return null
-    }
+  // --- Background PUT (runs after synchronous mint + state updates) ---
 
-    noteUri.value = null
-    loading.value = true
-    error.value = null
-
-    const root = podBaseUrl.endsWith('/') ? podBaseUrl.slice(0, -1) : podBaseUrl
-    const resourceId = mintResourceId()
-    const resourceUrl = `${root}/t/${resourceId}`
-
+  async function runCreatePut(resourceUrl) {
     try {
-      const { node: noteBlank } = ur.getBlankNode('Note: ' + resourceId)
+      const { node: noteBlank } = ur.getBlankNode('Note: ' + resourceUrl.split('/').pop())
 
       const tempStore = ur.$rdf.graph()
       const add = (s, p, o) => tempStore.add(s, p, o, ur.$rdf.defaultGraph())
@@ -77,9 +90,38 @@ export function useTwinPodNoteCreate({ typeUri = DEFAULT_TYPE_URI } = {}) {
       error.value = { type: 'network', message: e?.message || String(e) }
       return null
     } finally {
+      creating.value = false
       loading.value = false
     }
   }
 
-  return { noteUri, loading, error, createNote }
+  // --- Public entry point ---
+
+  function createNote(podBaseUrl) {
+    if (!podBaseUrl) {
+      error.value = { type: 'invalid-input', message: 'podBaseUrl is required' }
+      // Resolved synchronously so await-style callers see null immediately.
+      return Promise.resolve(null)
+    }
+
+    // Reset state at the start of each call so stale values from a previous
+    // failed create don't leak into this one.
+    noteUri.value = null
+    error.value = null
+
+    const root = podBaseUrl.endsWith('/') ? podBaseUrl.slice(0, -1) : podBaseUrl
+    const resourceId = mintResourceId()
+    const resourceUrl = `${root}/t/${resourceId}`
+
+    // Synchronous URI exposure: flipped BEFORE the first `await` so a caller
+    // reading `pendingUri.value` immediately after `createNote(...)` (without
+    // awaiting) sees the minted URI and can navigate optimistically.
+    pendingUri.value = resourceUrl
+    creating.value = true
+    loading.value = true
+
+    return runCreatePut(resourceUrl)
+  }
+
+  return { pendingUri, noteUri, creating, loading, error, createNote }
 }

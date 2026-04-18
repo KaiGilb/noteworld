@@ -59,6 +59,14 @@ describe('useTwinPodNoteCreate — initial state', () => {
     const { noteUri } = useTwinPodNoteCreate()
     expect(noteUri.value).toBeNull()
   })
+  test('pendingUri starts as null', () => {
+    const { pendingUri } = useTwinPodNoteCreate()
+    expect(pendingUri.value).toBeNull()
+  })
+  test('creating starts as false', () => {
+    const { creating } = useTwinPodNoteCreate()
+    expect(creating.value).toBe(false)
+  })
   test('loading starts as false', () => {
     const { loading } = useTwinPodNoteCreate()
     expect(loading.value).toBe(false)
@@ -66,6 +74,74 @@ describe('useTwinPodNoteCreate — initial state', () => {
   test('error starts as null', () => {
     const { error } = useTwinPodNoteCreate()
     expect(error.value).toBeNull()
+  })
+})
+
+// S.OptimisticCreate / Increment 2 — URI + creating flag must be exposed
+// synchronously so callers can navigate before the PUT resolves.
+// Spec: 5 - Project/NoteWorld/NoteWorld.md (V.Speed_Create_Note)
+// VDT:  5 - Project/NoteWorld/vdts/NoteWorld-VDT-2026-04-18.md (S.OptimisticCreate, notes 5 + 11)
+
+describe('useTwinPodNoteCreate — optimistic synchronous exposure (S.OptimisticCreate)', () => {
+  test('pendingUri is set synchronously before the PUT resolves', () => {
+    // Hold the PUT open so we can observe the state between call-site and resolution.
+    mockUploadTurtleToResource.mockImplementationOnce(() => new Promise(() => {}))
+    const { pendingUri, createNote } = useTwinPodNoteCreate()
+    createNote(POD)
+    expect(pendingUri.value).toMatch(new RegExp(`^${POD}/t/t_note_\\d+_[a-z0-9]{4}$`))
+  })
+
+  test('creating flips to true synchronously', () => {
+    mockUploadTurtleToResource.mockImplementationOnce(() => new Promise(() => {}))
+    const { creating, createNote } = useTwinPodNoteCreate()
+    createNote(POD)
+    expect(creating.value).toBe(true)
+  })
+
+  test('noteUri stays null until the PUT resolves', () => {
+    mockUploadTurtleToResource.mockImplementationOnce(() => new Promise(() => {}))
+    const { noteUri, createNote } = useTwinPodNoteCreate()
+    createNote(POD)
+    expect(noteUri.value).toBeNull()
+  })
+
+  test('creating flips to false after the PUT resolves', async () => {
+    const { creating, createNote } = useTwinPodNoteCreate()
+    await createNote(POD)
+    expect(creating.value).toBe(false)
+  })
+
+  test('creating flips to false after an HTTP failure too', async () => {
+    mockUploadTurtleToResource.mockResolvedValueOnce({ ok: false, status: 403 })
+    const { creating, createNote } = useTwinPodNoteCreate()
+    await createNote(POD)
+    expect(creating.value).toBe(false)
+  })
+
+  test('pendingUri equals the eventually-confirmed noteUri on success', async () => {
+    const { pendingUri, noteUri, createNote } = useTwinPodNoteCreate()
+    await createNote(POD)
+    expect(pendingUri.value).toBe(noteUri.value)
+  })
+
+  test('pendingUri keeps the minted URI even after an HTTP failure (no rollback)', async () => {
+    // HomeView navigates on pendingUri synchronously — rolling it back on failure
+    // would pull the rug out from under a view the user is already on. The editor
+    // surfaces the error via saveError instead.
+    mockUploadTurtleToResource.mockResolvedValueOnce({ ok: false, status: 500 })
+    const { pendingUri, noteUri, createNote } = useTwinPodNoteCreate()
+    await createNote(POD)
+    expect(pendingUri.value).not.toBeNull()
+    expect(noteUri.value).toBeNull()
+  })
+
+  test('invalid input resolves null without flipping pendingUri/creating', async () => {
+    const { pendingUri, creating, createNote } = useTwinPodNoteCreate()
+    const result = await createNote('')
+    expect(result).toBeNull()
+    expect(pendingUri.value).toBeNull()
+    expect(creating.value).toBe(false)
+    expect(mockUploadTurtleToResource).not.toHaveBeenCalled()
   })
 })
 
