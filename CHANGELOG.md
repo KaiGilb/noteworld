@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.1.3] - 2026-04-18
+### Fixed — F.Find_Note still empty on pods whose search indexer doesn't map `note`
+- `useTwinPodNoteSearch` now issues a parallel pod-local search for every term in `concepts` (default `['note', 'notes']`) via `ur.searchAndGetURIs`, and unions the subjects across the shared `ur.rdfStore` with a single type match on `schema:Note ∪ neo:a_note`. TwinPod's search endpoint is a per-pod concept resolver backed by that pod's Neo ontology map; concept labels are NOT portable. Observed 2026-04-18: `tst-first/search/note` returns notes, `tst-ia2/search/note` returns 200 empty-body, `tst-ia2/search/notes` returns the 15 notes that 5.1.2 was missing.
+- Added `concepts` option so callers building other vocabularies (`['task','tasks']`, `['idea','ideas']`, etc.) can override the default without forking the composable (consistent with the "no hardcoded ontology" rule in `Rule_Code_twinpod-client-package.md`).
+- Error model: `Promise.allSettled` — each concept query fails independently. `error` (type `search-error`) is set ONLY when every query fails; an empty-body 200 is a legitimate "no hits under this concept", not a failure. A partial success keeps whatever the successful query produced.
+- **Removed** the LDP container listing of `{pod}/t/` that an earlier 5.1.3 draft introduced. Discovery must be type-driven (RDF type + attributes), not location-driven (container path + URI prefix). Crawling `/t/` baked the interim ACL workaround into the package and would have excluded any note minted under a different path.
+- Reverses the `neo:a_note`-only filter introduced in v5.1.1; retains the dual-type union added in v5.1.2. Regression guards lock in: no `ur.hyperFetch` against containers, no URI-prefix filtering, `schema:Note` always in the queried types, both `note` and `notes` queried by default.
+
 ## [5.1.2] - 2026-04-18
 ### Fixed — F.Find_Note returned zero NoteWorld-authored notes (dual-type filter)
 - `useTwinPodNoteSearch` now filters the rdfStore on EITHER `schema:Note` (http://schema.org/Note) OR `neo:a_note` (https://neo.graphmetrix.net/node/a_note) and unions the subjects. Both `useTwinPodNoteCreate` and `useTwinPodNoteSave` write notes typed `schema:Note`, so the v5.1.1 single-type filter (neo:a_note only) matched zero subjects and F.Find_Note silently returned an empty list on every pod. The `neo:a_note` branch is retained so pods containing Neo-shaped notes from other tooling are still listed alongside NoteWorld notes.

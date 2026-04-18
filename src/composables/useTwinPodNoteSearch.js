@@ -1,30 +1,57 @@
 // UNIT_TYPE=Hook
 
 /**
- * Lists notes in a TwinPod pod by RDF type, not by container.
+ * Lists notes in a TwinPod pod by RDF type, using pod-local concept search.
  *
- * Notes are discovered via the TwinPod search endpoint — a pod-local concept
- * lookup that returns Turtle into `ur.rdfStore`. The returned store is then
- * filtered for subjects typed either `schema:Note` OR `neo:a_note`.
+ * Discovery is type-driven, not location-driven. We never list a container,
+ * never filter by URI path, never assume notes live under `/t/` (or any
+ * other path). A note is anything the pod's rdfStore types as either
+ * `schema:Note` (what NoteWorld writes) or `neo:a_note` (Neo-shaped notes
+ * from other tooling or TwinPod reifications).
  *
- * Design note — type-driven discovery (5.1.1):
- *   Resources are identified by RDF type plus the `t_type_` URI prefix, NOT
- *   by which container they live in. The current interim `/t/` container is
- *   an ACL workaround, not a semantic boundary, so listing it via LDP would
- *   both (a) leak implementation detail into the query, and (b) fail against
- *   pods whose ACL forbids container listing (e.g. `/t/` → 403 on this pod).
- *   v5.0.0 added an LDP listing path alongside the search; it was the wrong
- *   abstraction and has been removed here.
+ * How notes get into the store:
+ *   `ur.searchAndGetURIs(podRoot, concept, ...)` GETs
+ *   `{podRoot}/search/{concept}?language=…&rows=…&start=…`, gets Turtle
+ *   back, and parses it into the shared `ur.rdfStore`. We then run
+ *   `rdfStore.match(null, rdf:type, <note-type>)` to pull the subjects we
+ *   care about.
  *
- * Design note — dual-type filter (5.1.2):
- *   `useTwinPodNoteCreate` and `useTwinPodNoteSave` both write notes typed
- *   `schema:Note` (http://schema.org/Note). The v5.1.1 filter matched only
- *   `neo:a_note`, so NoteWorld-authored notes never appeared in F.Find_Note.
- *   We now match on both predicates and union the results:
- *     - `schema:Note`  — what NoteWorld writes (the canonical case).
- *     - `neo:a_note`   — Neo-shaped notes from other tooling or TwinPod
- *                         reifications; kept so a pod that mixes sources
- *                         lists everything rather than hiding half.
+ * Why multiple concept terms (5.1.3):
+ *   TwinPod's search endpoint is a per-pod concept resolver backed by that
+ *   pod's Neo ontology map. Concept names are not portable — the same
+ *   logical "note" lands under different English labels on different pods.
+ *   Observed 2026-04-18:
+ *     - `tst-first.demo.systemtwin.com/search/note`  → 200, returns notes
+ *     - `tst-ia2.demo.systemtwin.com/search/note`    → 200, empty body
+ *     - `tst-ia2.demo.systemtwin.com/search/notes`   → 200, returns notes
+ *   Rather than guess one, we query every term in `concepts` in parallel,
+ *   let each result parse into the shared store, then run ONE type match
+ *   across the union. Default `['note', 'notes']` covers the English
+ *   singular/plural split. Callers that own their own ontology map can
+ *   override via the `concepts` option.
+ *
+ * Why no container listing:
+ *   Earlier iterations (5.0.0, 5.1.3-draft) paired search with an LDP
+ *   listing of `{pod}/t/`. That violated "discovery is about types and
+ *   attributes, not container locations":
+ *     - Baked the current interim `/t/` ACL workaround into the package.
+ *     - Filtered by URI prefix (`/t/t_note_`), excluding notes written
+ *       by any tool that mints under a different path.
+ *     - Required a second HTTP round-trip on every search.
+ *   If search fails to surface a note that exists in the pod, the fix is
+ *   to add the missing concept name to `concepts`, not to crawl a path.
+ *
+ * Error model:
+ *   Each concept query is attempted independently (`Promise.allSettled`).
+ *   A failure in one does not poison the others. `error` is set only if
+ *   EVERY query fails. An empty-body 200 is legitimate (the pod genuinely
+ *   has no notes under that concept), not an error.
+ *
+ * @param {object} [opts]
+ * @param {string[]} [opts.concepts=['note','notes']]
+ *   Concept names to query against `{podRoot}/search/{concept}`. Queried in
+ *   parallel; results unioned by RDF type. Callers building other vocab
+ *   (e.g. `['task','tasks']`, `['idea','ideas']`) can override.
  *
  * @returns {{
  *   notes:   import('vue').Ref<Array<{ uri: string }>>,
@@ -39,10 +66,27 @@
 import { ref } from 'vue'
 import { ur } from '@kaigilb/twinpod-client'
 
-export function useTwinPodNoteSearch() {
+const DEFAULT_CONCEPTS = ['note', 'notes']
+
+export function useTwinPodNoteSearch(opts = {}) {
+  const concepts = Array.isArray(opts.concepts) && opts.concepts.length > 0
+    ? opts.concepts
+    : DEFAULT_CONCEPTS
+
   const notes = ref([])
   const loading = ref(false)
   const error = ref(null)
+
+  // Treats a settled Promise result as "failed" if it rejected, or the
+  // resolved value carries an error shape / HTTP >= 400. An empty 200
+  // (no hits under that concept) is NOT a failure — it's just nothing.
+  function isFailedResult(r) {
+    if (r.status === 'rejected') return true
+    const v = r.value
+    if (v?.error) return true
+    if (typeof v?.status === 'number' && v.status >= 400) return true
+    return false
+  }
 
   async function searchNotes(podRoot) {
     if (!podRoot) {
@@ -56,25 +100,35 @@ export function useTwinPodNoteSearch() {
     const root = podRoot.endsWith('/') ? podRoot.slice(0, -1) : podRoot
 
     try {
-      const searchResult = await ur.searchAndGetURIs(root, 'note', {
-        force: true, lang: 'en', rows: 100, start: 0
-      })
+      // Fire one request per concept in parallel. Each call parses its
+      // Turtle response into the shared `ur.rdfStore`; by the time all
+      // settle, the store contains every note the pod surfaced under any
+      // of our concept terms.
+      const results = await Promise.allSettled(
+        concepts.map(concept =>
+          ur.searchAndGetURIs(root, concept, {
+            force: true, lang: 'en', rows: 100, start: 0
+          })
+        )
+      )
 
-      if (searchResult?.error) {
-        error.value = { type: 'search-error', message: 'Search returned an error' }
+      // Only error if EVERY concept query failed. A partial success
+      // (some concept returned notes, another 500'd) is still a success —
+      // we keep what we got.
+      if (results.every(isFailedResult)) {
+        error.value = {
+          type: 'search-error',
+          message: 'All concept searches failed'
+        }
         notes.value = []
         return []
       }
-      if (typeof searchResult?.status === 'number' && searchResult.status >= 400) {
-        error.value = { type: 'search-error', message: `Search failed with HTTP ${searchResult.status}` }
-        notes.value = []
-        return []
-      }
 
-      // Extract subjects typed as notes from the store `searchAndGetURIs`
-      // auto-parsed into. Matches EITHER `schema:Note` (what NoteWorld writes)
-      // OR `neo:a_note` (Neo-shaped notes from other tooling). Restricting to
-      // these two types keeps unrelated 'note'-keyword hits from leaking in.
+      // ONE type match across the store after all queries have populated
+      // it. Matches EITHER `schema:Note` (what NoteWorld writes) OR
+      // `neo:a_note` (Neo-shaped notes from other tooling). Restricting
+      // to these two types keeps unrelated 'note'/'notes'-keyword hits
+      // (e.g. a Person whose description mentions "notes") from leaking in.
       const schemaHits = ur.rdfStore
         .match(null, ur.NS.RDF('type'), ur.NS.SCHEMA('Note'))
         .map(st => st.subject.value)
@@ -82,9 +136,8 @@ export function useTwinPodNoteSearch() {
         .match(null, ur.NS.RDF('type'), ur.NS.NEO('a_note'))
         .map(st => st.subject.value)
 
-      // Union + dedup by URI. A note that is typed both ways (TwinPod
-      // reification, or a resource re-saved after an older format) must
-      // still appear exactly once.
+      // Union + dedup by URI. A note typed both ways (TwinPod reification
+      // alongside a schema:Note assertion) must appear exactly once.
       const seen = new Set()
       const deduped = []
       for (const uri of [...schemaHits, ...neoHits]) {
@@ -94,6 +147,9 @@ export function useTwinPodNoteSearch() {
       notes.value = deduped
       return deduped
     } catch (e) {
+      // This catches anything thrown by `Promise.allSettled` or the type
+      // match itself; per-query rejections are already absorbed as
+      // 'rejected' settlements above.
       error.value = { type: 'network', message: e?.message || String(e) }
       notes.value = []
       return []
