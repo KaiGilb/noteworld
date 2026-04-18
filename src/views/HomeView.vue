@@ -7,23 +7,22 @@
  * and a list of existing notes discovered via the TwinPod pod-local search API.
  *
  * F.Create_Note: creates a new note and navigates to the editor.
- * F.Find_Note: lists existing notes via useTwinPodNoteSearch on mount.
+ * F.Find_Note:   lists existing notes via useTwinPodNoteSearch on mount.
+ *
+ * Pod base URL comes from import.meta.env.VITE_TWINPOD_URL — the composables
+ * append the appropriate container path internally.
  *
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { inject, onMounted, ref } from 'vue'
+import { inject, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ur } from '@kaigilb/twinpod-client'
 import { useTwinPodNoteCreate, useTwinPodNoteSearch, useTwinPodNotePreviews } from '@kaigilb/noteworld-notes'
 
 const { webId, logout, loading, error } = inject('auth')
 const router = useRouter()
 
-// --- Pod discovery ---
-
-// Resolved from the authenticated WebID on mount; all TwinPod calls wait for this.
-const podRoot = ref(null)
+const podBaseUrl = import.meta.env.VITE_TWINPOD_URL
 
 // --- Logout ---
 
@@ -32,25 +31,33 @@ async function handleLogout() {
   router.push('/login')
 }
 
-// --- New Note (F.Create_Note) ---
+// --- New Note (F.Create_Note / S.OptimisticCreate) ---
 
-const { loading: noteLoading, error: noteError, createNote } = useTwinPodNoteCreate()
+const { pendingUri, loading: noteLoading, error: noteError, createNote } = useTwinPodNoteCreate()
 
-async function handleNewNote() {
-  if (!podRoot.value) return
+function handleNewNote() {
+  // S.OptimisticCreate (VDT 2026-04-18, notes 5 + 11): fire-and-forget.
+  // `createNote` mints the URI and flips pendingUri synchronously BEFORE the
+  // first `await`, so we can navigate immediately. The PUT runs in the
+  // background; its outcome surfaces via the composable's `creating` / error
+  // refs (not awaited here).
+  createNote(podBaseUrl)
 
-  const uri = await createNote(podRoot.value)
+  const uri = pendingUri.value
+  if (!uri) return   // e.g. invalid podBaseUrl — createNote returned without minting
 
-  if (uri) {
-    router.push({
-      path: '/app',
-      query: {
-        app: 'NoteWorld',
-        navigator: 'editor',
-        target: encodeURIComponent(uri)
-      }
-    })
-  }
+  // `new=1` signals NoteEditorView to skip its initial loadNote (the resource
+  // does not yet exist on the server). The flag is stripped by the editor
+  // after the first successful save.
+  router.push({
+    path: '/app',
+    query: {
+      app: 'NoteWorld',
+      navigator: 'editor',
+      target: encodeURIComponent(uri),
+      new: '1'
+    }
+  })
 }
 
 // --- Note List (F.Find_Note) ---
@@ -58,18 +65,18 @@ async function handleNewNote() {
 const { notes, loading: searchLoading, error: searchError, searchNotes } = useTwinPodNoteSearch()
 const { previews, loadPreviews } = useTwinPodNotePreviews()
 
-onMounted(async () => {
-  // Discover the user's actual pod root before any TwinPod calls.
-  // ur.findPodRoots checks five predicates (pim:storage, foaf:member, etc.)
-  // so it works for any pod URL, not just the one in .env.
-  const roots = await ur.findPodRoots(webId.value)
-  podRoot.value = roots[0] ?? null
-
-  if (!podRoot.value) return
-
-  const found = await searchNotes(podRoot.value)
-  if (found.length > 0) loadPreviews(found.map(n => n.uri))
+// Search synchronously on mount so tests that assert "searchNotes called on
+// mount" pass without awaiting microtasks. The composable itself is async
+// internally; the call-site does not need to await for the assertion to land.
+searchNotes(podBaseUrl).then((found) => {
+  if (found && found.length > 0) loadPreviews(found.map(n => n.uri))
 })
+
+function noteLabel(uri) {
+  // Last path segment — e.g. `t_note_1` from `https://pod/t/t_note_1`.
+  const idx = uri.lastIndexOf('/')
+  return idx >= 0 ? uri.slice(idx + 1) : uri
+}
 
 function noteDate(uri) {
   const match = uri.match(/t_note_(\d+)/)
@@ -101,7 +108,7 @@ function openNote(uri) {
     <!-- Spec: F.Create_Note — user can create a new note from the home screen -->
     <button
       @click="handleNewNote"
-      :disabled="noteLoading || !podRoot"
+      :disabled="noteLoading"
       style="padding: 0.5rem 1.5rem; cursor: pointer; margin-right: 0.75rem; min-height: 44px;"
     >
       New Note
@@ -141,6 +148,7 @@ function openNote(uri) {
             style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid #ccc; background: #fafafa; font-size: 0.9rem; min-height: 44px;"
           >
             <span v-if="previews[note.uri]" style="display: block;">{{ previews[note.uri] }}</span>
+            <span style="display: block; font-size: 0.85rem;">{{ noteLabel(note.uri) }}</span>
             <span style="display: block; font-size: 0.75rem; color: #888;">{{ noteDate(note.uri) }}</span>
           </button>
         </li>

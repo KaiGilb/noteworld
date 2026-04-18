@@ -1,31 +1,42 @@
 // UNIT_TYPE=Widget
 
-import { describe, test, expect, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+import { ref, nextTick } from 'vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { axe } from 'vitest-axe'
 import { toHaveNoViolations } from 'vitest-axe/matchers.js'
 
-// Mock @kaigilb/noteworld-notes — NoteEditorView calls useTwinPodNoteRead and useTwinPodNoteSave.
-// Without this mock, the real composables import ur from @kaigilb/twinpod-client which requires
-// import.meta.env.VITE_HYPERGRAPH_CODE and inrupt localStorage access, both unavailable in jsdom.
-// Refs are required (not plain objects) so v-if bindings evaluate correctly in templates.
-vi.mock('@kaigilb/noteworld-notes', async () => {
-  const { ref } = await import('vue')
-  return {
-    useTwinPodNoteRead: () => ({
-      loading: ref(false),
-      error: ref(null),
-      loadNote: vi.fn().mockResolvedValue(null)
-    }),
-    useTwinPodNoteSave: () => ({
-      saving: ref(false),
-      saved: ref(false),
-      error: ref(null),
-      saveNote: vi.fn().mockResolvedValue(true)
-    })
-  }
-})
+// Mock @kaigilb/noteworld-notes — NoteEditorView calls useTwinPodNoteRead and
+// useTwinPodNoteSave. Without this mock, the real composables import `ur` from
+// @kaigilb/twinpod-client which requires VITE_HYPERGRAPH_CODE and inrupt
+// localStorage access, neither available in jsdom.
+//
+// Tests control loadNote / saveNote / state refs via the module-scoped mocks
+// exported below.
+
+const mockReadLoading = ref(false)
+const mockReadError = ref(null)
+const mockLoadNote = vi.fn().mockResolvedValue(null)
+
+const mockSaving = ref(false)
+const mockSaved = ref(false)
+const mockSaveError = ref(null)
+const mockSaveNote = vi.fn().mockResolvedValue(true)
+
+vi.mock('@kaigilb/noteworld-notes', () => ({
+  useTwinPodNoteRead: () => ({
+    loading: mockReadLoading,
+    error: mockReadError,
+    loadNote: mockLoadNote
+  }),
+  useTwinPodNoteSave: () => ({
+    saving: mockSaving,
+    saved: mockSaved,
+    error: mockSaveError,
+    saveNote: mockSaveNote
+  })
+}))
 
 import NoteEditorView from './NoteEditorView.vue'
 
@@ -33,21 +44,41 @@ expect.extend({ toHaveNoViolations })
 
 // Spec: F.Create_Note — Success-Criteria: A new empty note is open and ready for text input
 // Spec: V.Speed_Create_Note — editor must be immediately usable after navigation (no async load)
+// Spec: S.FullScreenNote (VDT 2026-04-18) — Apple-Notes-style chrome
+// Spec: S.OptimisticCreate (VDT 2026-04-18, note 8) — skip initial load when ?new=1
 
-function makeRouter(query = {}) {
-  const router = createRouter({
+function makeRouter() {
+  return createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: '/app', component: NoteEditorView },
       { path: '/', component: { template: '<div />' } }
     ]
   })
-  return router
 }
 
 const NOTE_URI = 'https://tst-first.demo.systemtwin.com/t/t_note_1234567890_abcd'
 
+function resetMocks() {
+  mockReadLoading.value = false
+  mockReadError.value = null
+  mockLoadNote.mockReset().mockResolvedValue(null)
+  mockSaving.value = false
+  mockSaved.value = false
+  mockSaveError.value = null
+  mockSaveNote.mockReset().mockResolvedValue(true)
+}
+
 describe('NoteEditorView', () => {
+
+  beforeEach(() => {
+    resetMocks()
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
 
   describe('rendering', () => {
 
@@ -59,7 +90,7 @@ describe('NoteEditorView', () => {
       expect(wrapper.find('textarea').exists()).toBe(true)
     })
 
-    test('textarea has a label associated via for/id', async () => {
+    test('textarea has a visually-hidden label associated via for/id', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
@@ -69,34 +100,238 @@ describe('NoteEditorView', () => {
       expect(textarea.exists()).toBe(true)
     })
 
-    test('renders the Back button', async () => {
+    test('renders the back button with Apple-Notes text "← Notes"', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
-      expect(wrapper.find('button').exists()).toBe(true)
+      const button = wrapper.find('button')
+      expect(button.exists()).toBe(true)
+      // Spec: S.FullScreenNote (VDT note 14) — back button reads "← Notes"
+      expect(button.text()).toContain('Notes')
     })
 
-    // Spec: URI_STATE_04 — the decoded note URI from route.query.target must be displayed
-    test('displays the note URI from the target query param', async () => {
+    // Spec: S.FullScreenNote (VDT note 14) — no visible note URI in the editor.
+    // This inverts the prior F.Edit_Note behaviour where the URI was shown.
+    test('does NOT display the note URI anywhere in the editor', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
-      expect(wrapper.text()).toContain(NOTE_URI)
+      expect(wrapper.text()).not.toContain(NOTE_URI)
     })
 
-    test('does not show note URI when target query param is absent', async () => {
+    // Spec: S.FullScreenNote — no explicit Save button; auto-save is the only save path.
+    test('does NOT render an explicit Save button', async () => {
       const router = makeRouter()
-      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor' } })
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
-      // No URI text visible — the v-if on noteUri should hide it
-      expect(wrapper.find('p').exists()).toBe(false)
+      const saveButton = wrapper.findAll('button').find(b => /^\s*Save\s*$/i.test(b.text()))
+      expect(saveButton).toBeUndefined()
     })
 
     test('textarea is empty on initial render (new note has no content)', async () => {
       const router = makeRouter()
-      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       expect(wrapper.find('textarea').element.value).toBe('')
+    })
+
+    // Spec: S.FullScreenNote — main fills viewport (100dvh × 100vw, white bg).
+    test('main element is styled to fill the viewport', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      const main = wrapper.find('main')
+      const style = main.attributes('style') || ''
+      expect(style).toMatch(/100dvh/)
+      expect(style).toMatch(/100vw/)
+    })
+
+  })
+
+  describe('S.OptimisticCreate — read-guard (VDT note 8)', () => {
+
+    // When ?new=1 is present, the create PUT is still in flight; loadNote
+    // must be skipped to avoid a 404.
+    test('skips loadNote when the URL carries new=1', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(mockLoadNote).not.toHaveBeenCalled()
+    })
+
+    // Existing notes (no new flag) follow the normal read path.
+    test('calls loadNote when new=1 is absent', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(mockLoadNote).toHaveBeenCalledWith(NOTE_URI)
+    })
+
+    // First successful save strips the `new=1` flag so a reload re-reads normally.
+    test('strips new=1 from the URL after the first successful save', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+      expect(router.currentRoute.value.query.new).toBe('1')
+      // Simulate the save composable flipping `saved` true after PUT succeeds.
+      mockSaved.value = true
+      await flushPromises()
+      expect(router.currentRoute.value.query.new).toBeUndefined()
+      // Target must survive the replace.
+      expect(decodeURIComponent(router.currentRoute.value.query.target)).toBe(NOTE_URI)
+    })
+
+  })
+
+  describe('auto-save (V.Speed_Save_Note + VDT note 9)', () => {
+
+    // Typing debounces for 1s, then fires a single saveNote call.
+    test('schedules saveNote ~1s after a keystroke', async () => {
+      vi.useFakeTimers()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      const textarea = wrapper.find('textarea')
+      await textarea.setValue('hello')
+      // Not yet — debounce still pending.
+      expect(mockSaveNote).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(1000)
+      expect(mockSaveNote).toHaveBeenCalledWith(NOTE_URI, 'hello')
+      expect(mockSaveNote).toHaveBeenCalledTimes(1)
+    })
+
+    // Rapid keystrokes collapse into a single save.
+    test('coalesces rapid keystrokes into a single debounced save', async () => {
+      vi.useFakeTimers()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      const textarea = wrapper.find('textarea')
+      await textarea.setValue('a')
+      vi.advanceTimersByTime(500)
+      await textarea.setValue('ab')
+      vi.advanceTimersByTime(500)
+      await textarea.setValue('abc')
+      vi.advanceTimersByTime(500)
+      // Each keystroke reset the timer; no save yet.
+      expect(mockSaveNote).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(1000)
+      expect(mockSaveNote).toHaveBeenCalledTimes(1)
+      expect(mockSaveNote).toHaveBeenLastCalledWith(NOTE_URI, 'abc')
+    })
+
+    // Loading existing content into the textarea must NOT echo back as a save.
+    test('does not auto-save the content returned by loadNote', async () => {
+      vi.useFakeTimers()
+      mockLoadNote.mockResolvedValue('existing server content')
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      mount(NoteEditorView, { global: { plugins: [router] } })
+      // Resolve the loadNote promise.
+      await vi.runAllTimersAsync()
+      await flushPromises()
+      vi.advanceTimersByTime(2000)
+      await flushPromises()
+      expect(mockSaveNote).not.toHaveBeenCalled()
+    })
+
+  })
+
+  describe('visibilitychange flush (VDT note 10)', () => {
+
+    // When the tab is hidden mid-debounce, flush synchronously so we don't
+    // lose the user's last keystrokes.
+    test('flushes a pending save immediately when the document becomes hidden', async () => {
+      vi.useFakeTimers()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('textarea').setValue('flush me')
+      // Debounce not yet elapsed.
+      expect(mockSaveNote).not.toHaveBeenCalled()
+
+      // Simulate the browser switching the tab to hidden.
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      document.dispatchEvent(new Event('visibilitychange'))
+
+      expect(mockSaveNote).toHaveBeenCalledWith(NOTE_URI, 'flush me')
+      expect(mockSaveNote).toHaveBeenCalledTimes(1)
+
+      // Restore so later tests aren't affected.
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    })
+
+    test('does not fire a save when becoming hidden with no pending edit', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      document.dispatchEvent(new Event('visibilitychange'))
+
+      expect(mockSaveNote).not.toHaveBeenCalled()
+
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    })
+
+  })
+
+  describe('unmount cleanup', () => {
+
+    // Unmounting must cancel the pending debounce — no save fires after leaving.
+    test('clears the pending debounce on unmount', async () => {
+      vi.useFakeTimers()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('textarea').setValue('draft')
+      wrapper.unmount()
+      vi.advanceTimersByTime(5000)
+      expect(mockSaveNote).not.toHaveBeenCalled()
+    })
+
+  })
+
+  describe('status indicator', () => {
+
+    // Spec: S.FullScreenNote — a fading save-status indicator, not a persistent one.
+    test('exposes "Saving…" in a role=status element while saving is true', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      mockSaving.value = true
+      await nextTick()
+      const status = wrapper.find('[role="status"]')
+      expect(status.exists()).toBe(true)
+      expect(status.text()).toContain('Saving')
+    })
+
+    test('exposes "Saved" in a role=status element when saved flips true', async () => {
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      mockSaved.value = true
+      await nextTick()
+      const status = wrapper.find('[role="status"]')
+      expect(status.text()).toContain('Saved')
     })
 
   })
@@ -104,14 +339,28 @@ describe('NoteEditorView', () => {
   describe('navigation', () => {
 
     // Spec: URI_STATE_08 — navigating away from editor must clear editor state
-    test('Back button navigates to /', async () => {
+    test('back button navigates to /', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
       await wrapper.find('button').trigger('click')
-      const { flushPromises } = await import('@vue/test-utils')
       await flushPromises()
       expect(router.currentRoute.value.path).toBe('/')
+    })
+
+    // Flushing on back prevents losing the last keystrokes if the user taps
+    // Back inside the debounce window.
+    test('back button flushes a pending save before navigating', async () => {
+      vi.useFakeTimers()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('textarea').setValue('unsaved')
+      await wrapper.find('button').trigger('click')
+
+      expect(mockSaveNote).toHaveBeenCalledWith(NOTE_URI, 'unsaved')
     })
 
   })
@@ -133,64 +382,13 @@ describe('NoteEditorView', () => {
 
   })
 
-  // --- Gap tests written by QATester — WCAG 2.1 AA color contrast fix ---
-
-  describe('color contrast (WCAG 2.1 AA)', () => {
-
-    // Spec: WCAG 2.1 AA — normal text requires a minimum contrast ratio of 4.5:1 against background.
-    // The note URI paragraph uses inline color: #595959 on a white (#ffffff) background.
-    // #595959 has a relative luminance of ~0.0999, giving a contrast ratio of ~7.00:1 — passes AA.
-    // axe-core cannot evaluate inline colors in jsdom (HTMLCanvasElement.getContext not implemented),
-    // so this test explicitly computes the contrast ratio from the inline style color value.
-    // jsdom normalises hex colors to rgb() — this test handles both forms.
-    // If the color is changed to a lower-contrast value, this test will catch the regression.
-    test('note URI paragraph uses a WCAG AA-compliant inline text color', async () => {
-      const router = makeRouter()
-      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
-      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
-      const para = wrapper.find('p')
-      expect(para.exists()).toBe(true)
-      const style = para.attributes('style') || ''
-
-      // jsdom normalises #595959 → rgb(89, 89, 89); also handle raw hex
-      let r, g, b
-      const rgbMatch = style.match(/color:\s*rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)/)
-      const hexMatch = style.match(/color:\s*(#[0-9a-fA-F]{6})/)
-      if (rgbMatch) {
-        r = parseInt(rgbMatch[1])
-        g = parseInt(rgbMatch[2])
-        b = parseInt(rgbMatch[3])
-      } else if (hexMatch) {
-        const hex = hexMatch[1].slice(1)
-        r = parseInt(hex.slice(0, 2), 16)
-        g = parseInt(hex.slice(2, 4), 16)
-        b = parseInt(hex.slice(4, 6), 16)
-      } else {
-        throw new Error('Could not parse a color value from the note URI paragraph inline style: ' + style)
-      }
-
-      // WCAG 2.1 relative luminance formula
-      function sRGB(c) { const v = c / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
-      function luminance(rr, gg, bb) { return 0.2126 * sRGB(rr) + 0.7152 * sRGB(gg) + 0.0722 * sRGB(bb) }
-      const textLum = luminance(r, g, b)
-      // Background is white (#ffffff), luminance = 1.0
-      const bgLum = 1.0
-      const contrastRatio = (bgLum + 0.05) / (textLum + 0.05)
-
-      // Spec: WCAG 2.1 AA — normal text (< 18px normal weight) requires >= 4.5:1
-      // The URI text is 0.8rem (~12.8px), so 4.5:1 applies. #595959 gives 7.00:1.
-      expect(contrastRatio).toBeGreaterThanOrEqual(4.5)
-    })
-
-  })
-
-  // --- Gap tests written by QATester — Mobile-First Standard ---
+  // --- Mobile-First Standard ---
 
   describe('mobile touch targets (MOBILE_03)', () => {
 
     // Spec: MOBILE_03 — every interactive element must have a minimum touch target of 44×44px.
     // jsdom does not do CSS layout, so we check for an explicit min-height inline style of at least 44px.
-    test('Back button declares a min-height of at least 44px in its inline style', async () => {
+    test('back button declares a min-height of at least 44px in its inline style', async () => {
       const router = makeRouter()
       await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
       const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })

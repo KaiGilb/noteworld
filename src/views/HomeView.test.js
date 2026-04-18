@@ -10,8 +10,15 @@ import { toHaveNoViolations } from 'vitest-axe/matchers.js'
 // Spec: F.NoteWorld — home screen must display the authenticated user's WebID and allow logout
 // Spec: F.Create_Note — home screen must provide a New Note button
 
-// Mock @kaigilb/noteworld-notes — HomeView calls useTwinPodNoteCreate and useTwinPodNoteSearch.
-// Tests inject controllable state via the mock; no real TwinPod calls are made.
+// Mock @kaigilb/noteworld-notes — HomeView calls useTwinPodNoteCreate,
+// useTwinPodNoteSearch, and useTwinPodNotePreviews. Tests inject controllable
+// state via the mock; no real TwinPod calls are made.
+//
+// S.OptimisticCreate (VDT 2026-04-18, notes 5 + 11): HomeView now reads
+// `pendingUri.value` synchronously right after calling `createNote`. Tests
+// simulate this by having `mockCreateNote` flip `mockPendingUri.value` when
+// invoked, mirroring the real composable's synchronous URI mint.
+const mockPendingUri = ref(null)
 const mockCreateNote = vi.fn()
 const mockNoteLoading = ref(false)
 const mockNoteError = ref(null)
@@ -19,9 +26,12 @@ const mockSearchNotes = vi.fn().mockResolvedValue([])
 const mockSearchLoading = ref(false)
 const mockSearchError = ref(null)
 const mockNotes = ref([])
+const mockPreviews = ref({})
+const mockLoadPreviews = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@kaigilb/noteworld-notes', () => ({
   useTwinPodNoteCreate: () => ({
+    pendingUri: mockPendingUri,
     loading: mockNoteLoading,
     error: mockNoteError,
     createNote: mockCreateNote
@@ -31,7 +41,19 @@ vi.mock('@kaigilb/noteworld-notes', () => ({
     loading: mockSearchLoading,
     error: mockSearchError,
     searchNotes: mockSearchNotes
+  }),
+  useTwinPodNotePreviews: () => ({
+    previews: mockPreviews,
+    loadPreviews: mockLoadPreviews
   })
+}))
+
+// HomeView also imports `ur` from @kaigilb/twinpod-client and calls
+// ur.findPodRoots(webId) onMounted. Stub it so tests don't hit real HTTP.
+vi.mock('@kaigilb/twinpod-client', () => ({
+  ur: {
+    findPodRoots: vi.fn().mockResolvedValue(['https://tst-first.demo.systemtwin.com'])
+  }
 }))
 
 import HomeView from './HomeView.vue'
@@ -168,31 +190,47 @@ describe('HomeView', () => {
 
     // Spec: F.Create_Note — clicking New Note must call createNote with the TwinPod notes container URL
     test('calls createNote when New Note button is clicked', async () => {
-      mockCreateNote.mockResolvedValue('https://tst-first.demo.systemtwin.com/node/t_abc1')
+      mockCreateNote.mockImplementation(() => {
+        mockPendingUri.value = 'https://tst-first.demo.systemtwin.com/t/t_note_1'
+        return Promise.resolve('https://tst-first.demo.systemtwin.com/t/t_note_1')
+      })
       const wrapper = mount(HomeView, {
         global: { plugins: [router], provide: makeProvide() }
       })
       await findButton(wrapper, 'New Note').trigger('click')
       expect(mockCreateNote).toHaveBeenCalledOnce()
+      mockPendingUri.value = null
     })
 
     test('passes VITE_TWINPOD_URL as podBaseUrl to createNote', async () => {
       mockCreateNote.mockClear()
-      mockCreateNote.mockResolvedValue('https://tst-first.demo.systemtwin.com/node/t_abc1')
+      mockCreateNote.mockImplementation(() => {
+        mockPendingUri.value = 'https://tst-first.demo.systemtwin.com/t/t_note_1'
+        return Promise.resolve('https://tst-first.demo.systemtwin.com/t/t_note_1')
+      })
       const wrapper = mount(HomeView, {
         global: { plugins: [router], provide: makeProvide() }
       })
       await findButton(wrapper, 'New Note').trigger('click')
       // createNote is called with VITE_TWINPOD_URL (the pod base URL — no trailing slash or path).
-      // The composable handles appending /node/ internally.
+      // The composable handles appending /t/ internally.
       // In the test environment import.meta.env.VITE_TWINPOD_URL is undefined — verify it was called once.
       expect(mockCreateNote).toHaveBeenCalledOnce()
+      mockPendingUri.value = null
     })
 
-    // Spec: F.Create_Note — after note creation, navigate to editor with the note URI in query params
-    test('navigates to /app with editor query params after note creation', async () => {
-      const noteUri = 'https://tst-first.demo.systemtwin.com/node/t_abc1'
-      mockCreateNote.mockResolvedValue(noteUri)
+    // Spec: F.Create_Note + S.OptimisticCreate — HomeView reads `pendingUri.value`
+    // synchronously after calling createNote and navigates immediately (no await).
+    // The `new=1` query flag tells NoteEditorView to skip its initial loadNote
+    // because the resource doesn't exist on the server yet.
+    test('navigates to /app with editor query params (including new=1) after createNote mints URI', async () => {
+      const noteUri = 'https://tst-first.demo.systemtwin.com/t/t_note_abc1'
+      // Simulate the composable's synchronous mint: flip pendingUri when createNote is called.
+      mockCreateNote.mockImplementation(() => {
+        mockPendingUri.value = noteUri
+        // Return a never-resolving promise to prove HomeView doesn't await it.
+        return new Promise(() => {})
+      })
       const isolatedRouter = createRouter({
         history: createMemoryHistory(),
         routes: [
@@ -213,10 +251,19 @@ describe('HomeView', () => {
       expect(isolatedRouter.currentRoute.value.query.navigator).toBe('editor')
       // target must be the encoded note URI
       expect(decodeURIComponent(isolatedRouter.currentRoute.value.query.target)).toBe(noteUri)
+      // S.OptimisticCreate: `new=1` flag tells the editor to skip its initial read
+      expect(isolatedRouter.currentRoute.value.query.new).toBe('1')
+      mockPendingUri.value = null
     })
 
-    test('does not navigate when createNote returns null (on error)', async () => {
-      mockCreateNote.mockResolvedValue(null)
+    // S.OptimisticCreate: when createNote fails synchronously (e.g. invalid
+    // podBaseUrl), pendingUri stays null, so HomeView must NOT navigate.
+    test('does not navigate when pendingUri stays null (invalid-input path)', async () => {
+      mockCreateNote.mockImplementation(() => {
+        // No mint — simulate invalid-input branch that returns early.
+        return Promise.resolve(null)
+      })
+      mockPendingUri.value = null
       const isolatedRouter = createRouter({
         history: createMemoryHistory(),
         routes: [

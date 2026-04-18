@@ -58,12 +58,53 @@ test.describe('F.Create_Note — New Note flow', () => {
     await expect(textarea).toBeVisible()
   })
 
-  test('editor displays the new note URI', async ({ mockTwinPod }) => {
+  // Spec: S.FullScreenNote (VDT 2026-04-18, note 14) — editor must NOT display the note URI.
+  // VATester gap: the old test asserted URI visibility, contradicting the new spec.
+  test('editor does NOT display the new note URI (S.FullScreenNote)', async ({ mockTwinPod }) => {
     await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
     await mockTwinPod.page.waitForURL(/\/app/)
     const url = new URL(mockTwinPod.page.url())
     const target = decodeURIComponent(url.searchParams.get('target'))
-    await expect(mockTwinPod.page.getByText(target)).toBeVisible()
+    // Give the editor a tick to render before asserting absence.
+    await mockTwinPod.page.waitForTimeout(200)
+    const bodyText = await mockTwinPod.page.locator('body').innerText()
+    expect(bodyText).not.toContain(target)
+  })
+
+  // Spec: S.OptimisticCreate (VDT 2026-04-18, notes 5 + 11) — `new=1` flag is
+  // present on the URL so the editor skips its initial read.
+  test('navigates with new=1 query flag (S.OptimisticCreate)', async ({ mockTwinPod }) => {
+    await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
+    await mockTwinPod.page.waitForURL(/\/app/)
+    const url = new URL(mockTwinPod.page.url())
+    expect(url.searchParams.get('new')).toBe('1')
+  })
+
+  // Spec: S.FullScreenNote — no explicit Save button; auto-save only.
+  test('editor does NOT render a Save button (S.FullScreenNote)', async ({ mockTwinPod }) => {
+    await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
+    await mockTwinPod.page.waitForURL(/\/app/)
+    const saveButton = mockTwinPod.page.getByRole('button', { name: /^Save$/i })
+    await expect(saveButton).toHaveCount(0)
+  })
+
+  // Spec: S.FullScreenNote — main element must fill the viewport (100dvh / 100vw).
+  test('editor main element is styled to fill the viewport (S.FullScreenNote)', async ({ mockTwinPod }) => {
+    await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
+    await mockTwinPod.page.waitForURL(/\/app/)
+    const main = mockTwinPod.page.locator('main')
+    const style = await main.getAttribute('style')
+    expect(style).toMatch(/100dvh/)
+    expect(style).toMatch(/100vw/)
+  })
+
+  // Spec: S.FullScreenNote — back button reads "← Notes" (Apple-Notes style).
+  test('back button text reads "Notes" (S.FullScreenNote)', async ({ mockTwinPod }) => {
+    await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
+    await mockTwinPod.page.waitForURL(/\/app/)
+    const backButton = mockTwinPod.page.getByRole('button', { name: /Back to notes/i })
+    await expect(backButton).toBeVisible()
+    await expect(backButton).toContainText('Notes')
   })
 
   // Spec: MOBILE_03 — Back button in editor must have a minimum touch target of 44x44 px
@@ -141,27 +182,29 @@ test.describe('F.Create_Note — V.MobileUX 375px viewport', () => {
   })
 })
 
-test.describe('F.Create_Note — error states', () => {
+test.describe('F.Create_Note — error states (S.OptimisticCreate)', () => {
 
-  // Spec: ERROR_HANDLING_02 — Components must not silently fail
-  test('shows error message when TwinPod returns 403 on the resource PUT', async ({ mockTwinPod }) => {
+  // Spec: S.OptimisticCreate (VDT 2026-04-18) — navigation happens synchronously
+  // before the PUT resolves. The user is taken to /app and the editor is shown
+  // immediately. If the background PUT fails, the editor stays open on the
+  // optimistic URI (pendingUri is not rolled back — see useTwinPodNoteCreate
+  // unit test "pendingUri keeps the minted URI even after an HTTP failure").
+  test('still navigates to /app when TwinPod returns 403 on the resource PUT', async ({ mockTwinPod }) => {
     await mockTwinPod.routeStackBCreateError(403)
     await mockTwinPod.page.goto('/')
     await mockTwinPod.page.waitForURL('/')
     await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
-    await mockTwinPod.page.waitForTimeout(500)
-    expect(new URL(mockTwinPod.page.url()).pathname).toBe('/')
-    await expect(mockTwinPod.page.locator('[role="alert"]')).toBeVisible()
+    await mockTwinPod.page.waitForURL(/\/app/)
+    expect(new URL(mockTwinPod.page.url()).pathname).toBe('/app')
   })
 
-  test('shows error message when TwinPod returns 500 on the resource PUT', async ({ mockTwinPod }) => {
+  test('still navigates to /app when TwinPod returns 500 on the resource PUT', async ({ mockTwinPod }) => {
     await mockTwinPod.routeStackBCreateError(500)
     await mockTwinPod.page.goto('/')
     await mockTwinPod.page.waitForURL('/')
     await mockTwinPod.page.getByRole('button', { name: /New Note/i }).click()
-    await mockTwinPod.page.waitForTimeout(500)
-    expect(new URL(mockTwinPod.page.url()).pathname).toBe('/')
-    await expect(mockTwinPod.page.locator('[role="alert"]')).toBeVisible()
+    await mockTwinPod.page.waitForURL(/\/app/)
+    expect(new URL(mockTwinPod.page.url()).pathname).toBe('/app')
   })
 
 })
