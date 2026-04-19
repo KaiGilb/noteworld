@@ -30,7 +30,7 @@
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTwinPodNoteSave, useTwinPodNoteRead } from '@kaigilb/noteworld-notes'
 
@@ -58,6 +58,7 @@ const isNew = computed(() => route.query.new === '1')
 // --- Note text + backing composables ---
 
 const text = ref('')
+const textareaEl = ref(null)
 const { loading: readLoading, error: readError, loadNote } = useTwinPodNoteRead()
 const { saving, saved, error: saveError, saveNote } = useTwinPodNoteSave()
 
@@ -68,11 +69,37 @@ let suppressNextSave = false
 
 async function loadCurrent() {
   if (!noteUri.value) return
-  // S.OptimisticCreate: skip the read while the create PUT is still flying.
-  // The editor starts empty; the first save persists whatever the user types.
-  if (isNew.value) return
+
+  // S.OptimisticCreate: the create PUT is still in flight — textarea stays
+  // empty so the user can start typing immediately. Just focus and return.
+  if (isNew.value) {
+    await nextTick()
+    textareaEl.value?.focus()
+    return
+  }
+
+  // Optimistic: show cached text immediately so the textarea isn't blank
+  // during the TwinPod round-trip (~1-3s on the real pod). The preview
+  // composable already fetched and cached the text when the home screen loaded,
+  // so this is typically instant. The fresh server fetch settles behind the
+  // scenes and only updates the textarea if the server value differs.
+  try {
+    const cached = localStorage.getItem('notetext:' + noteUri.value)
+    if (cached) {
+      suppressNextSave = true
+      text.value = cached
+    }
+  } catch { /* ignore — localStorage unavailable in some browser contexts */ }
+
+  // Focus before loadNote sets readLoading=true (which would disable the textarea).
+  await nextTick()
+  textareaEl.value?.focus()
+
   const value = await loadNote(noteUri.value)
-  if (value !== null) {
+  // Only assign if the value differs — avoids flicker when server matches cache,
+  // and avoids leaving `suppressNextSave = true` when nothing actually changed
+  // (which would swallow the user's first keystroke).
+  if (value !== null && value !== text.value) {
     suppressNextSave = true
     text.value = value
   }
@@ -218,9 +245,9 @@ function goHome() {
 
     <textarea
       id="note-content"
+      ref="textareaEl"
       v-model="text"
       aria-label="Note content"
-      :disabled="readLoading"
       placeholder="Start writing…"
       style="flex: 1 1 auto; width: 100%; border: none; outline: none; resize: none; padding: 1rem; box-sizing: border-box; font-family: inherit; font-size: 1rem; line-height: 1.5; color: #1a1a1a; background: transparent;"
     ></textarea>

@@ -40,7 +40,11 @@ test.describe('HomeView (authenticated)', () => {
   })
 
   // Spec: Accessibility — must meet WCAG 2.1 AA (meter: axe-core violations = 0)
+  // Wait for HomeView to fully render (New Note button visible) before
+  // running axe — avoids scanning the "Connecting…" loading state which
+  // has no landmark or heading and would produce false violations.
   test('has no accessibility violations', async ({ authedPage }) => {
+    await expect(authedPage.getByRole('button', { name: /New Note/i })).toBeVisible()
     const results = await new AxeBuilder({ page: authedPage }).analyze()
     expect(results.violations).toEqual([])
   })
@@ -106,11 +110,19 @@ const SEARCH_CORS_HEADERS = {
   'Access-Control-Expose-Headers': 'location, etag, link, wac-allow',
   'Access-Control-Max-Age': '86400'
 }
+// Real pod format (verified 2026-04-19 against tst-ia2.demo.systemtwin.com):
+// Notes are typed as sio:SIO_000110; the class carries neo:m_cid "a_paragraph"
+// linking it to the Neo concept name. useTwinPodNoteSearch resolves notes via
+// this two-step neo:m_cid → rdf:type lookup (not rdf:type neo:a_paragraph directly).
+const SIO_PARAGRAPH = 'http://semanticscience.org/resource/SIO_000110'
 const SEARCH_TURTLE = `
 @prefix neo: <https://neo.graphmetrix.net/node/> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-<${NOTE_1_URI}> rdf:type neo:a_note .
-<${NOTE_2_URI}> rdf:type neo:a_note .
+@prefix sio: <http://semanticscience.org/resource/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+<${NOTE_1_URI}> a sio:SIO_000110 .
+<${NOTE_2_URI}> a sio:SIO_000110 .
+sio:SIO_000110 neo:m_cid "a_paragraph"^^xsd:string .
 `
 
 test.describe('HomeView — F.Find_Note note list', () => {
@@ -151,7 +163,7 @@ test.describe('HomeView — F.Find_Note note list', () => {
       if (method === 'OPTIONS') {
         await route.fulfill({ status: 204, headers: SEARCH_CORS_HEADERS, body: '' })
       } else {
-        const turtle = `@prefix schema: <http://schema.org/> .\n<${NOTE_1_URI}#note> a schema:Note ; schema:text "Hello" .\n`
+        const turtle = `@prefix schema: <http://schema.org/> .\n@prefix neo: <https://neo.graphmetrix.net/node/> .\n<${NOTE_1_URI}#note> a neo:a_paragraph ; schema:text "Hello" .\n`
         await route.fulfill({
           status: 200,
           headers: { ...SEARCH_CORS_HEADERS, 'Content-Type': 'text/turtle' },
@@ -170,7 +182,7 @@ test.describe('HomeView — F.Find_Note note list', () => {
 
   // Spec: MOBILE_03 — note list buttons must have a minimum touch target of 44×44px
   test('note list buttons have a touch target height of at least 44px', async ({ mockTwinPod }) => {
-    const noteButton = mockTwinPod.page.getByText('t_note_1776287762997_2jw7')
+    const noteButton = mockTwinPod.page.getByRole('button').filter({ hasText: 't_note_1776287762997_2jw7' })
     const box = await noteButton.boundingBox()
     expect(box.height).toBeGreaterThanOrEqual(44)
   })
@@ -226,7 +238,7 @@ test.describe('HomeView — F.Find_Note V.MobileUX 375px viewport', () => {
 
   // Spec: V.MobileUX + MOBILE_03 — note list buttons must be at least 44x44 on 375px viewport
   test('note list buttons have at least 44px touch target on 375px viewport', async ({ mockTwinPod }) => {
-    const noteButton = mockTwinPod.page.getByText('t_note_1776287762997_2jw7')
+    const noteButton = mockTwinPod.page.getByRole('button').filter({ hasText: 't_note_1776287762997_2jw7' })
     await expect(noteButton).toBeVisible()
     const box = await noteButton.boundingBox()
     expect(box.height).toBeGreaterThanOrEqual(44)

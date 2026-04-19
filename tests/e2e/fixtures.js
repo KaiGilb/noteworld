@@ -96,7 +96,7 @@ export const test = base.extend({
        * Mock a successful Stack B create flow.
        *   - PUT {pod}/t/t_note_{...} → 201 with Location; OPTIONS → 204
        *   - GET {pod}/t/t_note_{...} (read-back from useTwinPodNoteRead) → 200 empty turtle
-       *     with a single schema:Note Thing so the editor can render an empty body.
+       *     with a single neo:a_paragraph Thing so the editor can render an empty body.
        *
        * Captures the resource PUT so tests can assert on URL, method, and content type.
        */
@@ -126,7 +126,7 @@ export const test = base.extend({
           }
           if (method === 'GET' || method === 'HEAD') {
             // Empty note stub — single Thing at {url}#note with schema:text " ".
-            const turtle = `@prefix schema: <http://schema.org/> .\n<${url}#note> a schema:Note ; schema:text " " .\n`
+            const turtle = `@prefix schema: <http://schema.org/> .\n@prefix neo: <https://neo.graphmetrix.net/node/> .\n<${url}#note> a neo:a_paragraph ; schema:text " " .\n`
             await route.fulfill({
               status: 200,
               headers: { ...CORS_HEADERS, 'Content-Type': 'text/turtle' },

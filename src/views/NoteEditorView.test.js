@@ -439,4 +439,149 @@ describe('NoteEditorView', () => {
 
   })
 
+  // --- Gap tests written by VATester (Increment 3) ---
+
+  describe('autofocus — textarea is focused on note open', () => {
+
+    // Spec: F.Edit_Note UX — textarea must receive focus when a note is opened
+    // (new or existing) so the user can begin typing immediately without an
+    // extra tap. This is an Increment 3 UX requirement.
+    //
+    // jsdom does not support the focus API the same way a real browser does
+    // (document.activeElement stays body unless `attachTo: document.body` is used
+    // and the element is actually interactive). We therefore test that the
+    // component *calls* focus() on the textarea element via the ref, which is the
+    // correct behavioural contract regardless of jsdom limitations.
+    test('calls focus() on the textarea element after mount when new=1 (new note path)', async () => {
+      const focusSpy = vi.fn()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, {
+        global: { plugins: [router] },
+        attachTo: document.body
+      })
+      // Patch the DOM element's focus after mounting.
+      const textarea = wrapper.find('textarea').element
+      textarea.focus = focusSpy
+      // Trigger loadCurrent again now that the spy is in place.
+      await flushPromises()
+      // In the new=1 branch, loadCurrent calls nextTick then focus.
+      await nextTick()
+      // The component may have already called focus() before we could spy — verify
+      // the textarea element is focused OR that focus was called. We check both
+      // forms because jsdom's activeElement assignment varies by attach mode.
+      const isFocused = document.activeElement === textarea || focusSpy.mock.calls.length > 0
+      expect(isFocused).toBe(true)
+      wrapper.unmount()
+    })
+
+    // Spec: F.Edit_Note UX — textarea receives focus on existing note open (non-new path).
+    test('calls focus() on the textarea element after mount when new is absent (existing note path)', async () => {
+      mockLoadNote.mockResolvedValue('some content')
+      const focusSpy = vi.fn()
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, {
+        global: { plugins: [router] },
+        attachTo: document.body
+      })
+      const textarea = wrapper.find('textarea').element
+      textarea.focus = focusSpy
+      await flushPromises()
+      await nextTick()
+      const isFocused = document.activeElement === textarea || focusSpy.mock.calls.length > 0
+      expect(isFocused).toBe(true)
+      wrapper.unmount()
+    })
+
+  })
+
+  describe('optimistic localStorage pre-load in editor', () => {
+
+    // Spec: F.Edit_Note UX — editor must show cached text immediately (optimistic
+    // pre-load from localStorage) so the textarea is not blank during the
+    // TwinPod round-trip. The cache key is 'notetext:<noteUri>'.
+    test('pre-fills textarea with localStorage text before loadNote resolves', async () => {
+      // Put something in the cache before mounting.
+      localStorage.setItem('notetext:' + NOTE_URI, 'cached preview text')
+
+      // loadNote is intentionally slow (never-resolving) to isolate the optimistic
+      // pre-load. If the editor only shows text after loadNote resolves, the
+      // textarea would be empty during the check below.
+      let releaseLoad
+      mockLoadNote.mockImplementation(() => new Promise(r => { releaseLoad = r }))
+
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] }, attachTo: document.body })
+
+      // Give Vue one tick to run the onMounted → loadCurrent → localStorage.getItem path.
+      await nextTick()
+
+      // The textarea must already show the cached text, before loadNote settles.
+      expect(wrapper.find('textarea').element.value).toBe('cached preview text')
+
+      // Cleanup
+      releaseLoad(null)
+      await flushPromises()
+      wrapper.unmount()
+      localStorage.removeItem('notetext:' + NOTE_URI)
+    })
+
+    // When the server value differs from cache, the textarea must update.
+    test('updates textarea with server value when loadNote returns different content', async () => {
+      localStorage.setItem('notetext:' + NOTE_URI, 'old cached text')
+      mockLoadNote.mockResolvedValue('fresh server text')
+
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] }, attachTo: document.body })
+      await flushPromises()
+
+      expect(wrapper.find('textarea').element.value).toBe('fresh server text')
+      wrapper.unmount()
+      localStorage.removeItem('notetext:' + NOTE_URI)
+    })
+
+    // When cache and server agree, no flicker: textarea stays at the same value.
+    test('does not trigger a save when loadNote returns the same text as the cache', async () => {
+      vi.useFakeTimers()
+      const SAME = 'matching text'
+      localStorage.setItem('notetext:' + NOTE_URI, SAME)
+      mockLoadNote.mockResolvedValue(SAME)
+
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      mount(NoteEditorView, { global: { plugins: [router] } })
+      await vi.runAllTimersAsync()
+      await flushPromises()
+      vi.advanceTimersByTime(2500)
+      await flushPromises()
+
+      expect(mockSaveNote).not.toHaveBeenCalled()
+      localStorage.removeItem('notetext:' + NOTE_URI)
+    })
+
+    // When there is no cache entry the pre-load is skipped: textarea stays empty
+    // until loadNote settles. Guards against a regression where a missing cache
+    // entry causes a spurious empty-string pre-load that overwrites server content.
+    test('leaves textarea empty when localStorage has no entry for the note URI', async () => {
+      localStorage.removeItem('notetext:' + NOTE_URI)
+      let releaseLoad
+      mockLoadNote.mockImplementation(() => new Promise(r => { releaseLoad = r }))
+
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await nextTick()
+
+      expect(wrapper.find('textarea').element.value).toBe('')
+
+      releaseLoad(null)
+      await flushPromises()
+      wrapper.unmount()
+    })
+
+  })
+
 })

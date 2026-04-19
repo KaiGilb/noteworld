@@ -17,7 +17,7 @@
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { inject, onMounted } from 'vue'
+import { inject, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTwinPodNoteCreate, useTwinPodNoteSearch, useTwinPodNotePreviews } from '@kaigilb/noteworld-notes'
 
@@ -91,6 +91,17 @@ function noteDate(uri) {
   return new Date(Number(match[1])).toLocaleString()
 }
 
+// Sort newest-first. NoteWorld-minted URIs embed a ms timestamp in t_note_{ts}.
+// Notes without that pattern (e.g. legacy Graphmetrix nodes) get timestamp 0
+// and float to the bottom.
+const sortedNotes = computed(() => {
+  const ts = uri => {
+    const m = uri.match(/t_note_(\d+)/)
+    return m ? Number(m[1]) : 0
+  }
+  return [...notes.value].sort((a, b) => ts(b.uri) - ts(a.uri))
+})
+
 function openNote(uri) {
   router.push({
     path: '/app',
@@ -149,17 +160,18 @@ function openNote(uri) {
       </p>
 
       <ul v-if="notes.length > 0" style="list-style: none; padding: 0; margin: 0;">
-        <li v-for="note in notes" :key="note.uri" style="margin-bottom: 0.5rem;">
+        <li v-for="note in sortedNotes" :key="note.uri" style="margin-bottom: 0.5rem;">
           <button
             @click="openNote(note.uri)"
             style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid #ccc; background: #fafafa; font-size: 0.9rem; min-height: 44px;"
           >
             <span v-if="previews[note.uri]" style="display: block;">{{ previews[note.uri] }}</span>
             <span style="display: block; font-size: 0.85rem;">{{ noteLabel(note.uri) }}</span>
-            <span style="display: block; font-size: 0.75rem; color: #888;">{{ noteDate(note.uri) }}</span>
+            <span style="display: block; font-size: 0.75rem; color: #696969;">{{ noteDate(note.uri) }}</span>
           </button>
         </li>
       </ul>
     </section>
+
   </main>
 </template>

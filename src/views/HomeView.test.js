@@ -650,6 +650,64 @@ describe('HomeView', () => {
       mockSearchLoading.value = false
     })
 
+    // --- Gap tests written by VATester (Increment 3 — sort newest-first) ---
+
+    // Spec: F.Find_Note UX — notes must appear sorted newest-first.
+    // NoteWorld mints URIs with t_note_{ms-timestamp} — the sort key is the
+    // numeric timestamp in the URI. The computed `sortedNotes` must order by
+    // descending timestamp so the most recently created note leads the list.
+    test('renders notes newest-first (highest timestamp at top)', () => {
+      // Three notes with ascending timestamps — oldest = 1000, newest = 3000.
+      mockNotes.value = [
+        { uri: 'https://pod.example.com/t/t_note_1000_a' },
+        { uri: 'https://pod.example.com/t/t_note_3000_c' },
+        { uri: 'https://pod.example.com/t/t_note_2000_b' }
+      ]
+      const wrapper = mount(HomeView, {
+        global: { plugins: [router], provide: makeProvide() }
+      })
+      // Buttons in DOM order reflect sortedNotes order.
+      const noteButtons = wrapper.findAll('button').filter(b =>
+        b.text().includes('t_note_')
+      )
+      // First button must be the newest (timestamp 3000).
+      expect(noteButtons[0].text()).toContain('t_note_3000')
+      // Last button must be the oldest (timestamp 1000).
+      expect(noteButtons[noteButtons.length - 1].text()).toContain('t_note_1000')
+      mockNotes.value = []
+    })
+
+    // Notes without a t_note_{timestamp} pattern (e.g. legacy Graphmetrix nodes)
+    // get timestamp 0 and must float to the bottom, below all standard notes.
+    test('legacy notes with no timestamp pattern sort to the bottom', () => {
+      mockNotes.value = [
+        { uri: 'https://pod.example.com/t/t_note_5000_x' },
+        { uri: 'https://pod.example.com/node/legacy-node-abc' },
+        { uri: 'https://pod.example.com/t/t_note_1000_y' }
+      ]
+      const wrapper = mount(HomeView, {
+        global: { plugins: [router], provide: makeProvide() }
+      })
+      const noteButtons = wrapper.findAll('button').filter(b =>
+        b.text().includes('t_note_') || b.text().includes('legacy-node')
+      )
+      // Newest standard note first.
+      expect(noteButtons[0].text()).toContain('t_note_5000')
+      // Legacy node (timestamp 0) must be last.
+      expect(noteButtons[noteButtons.length - 1].text()).toContain('legacy-node')
+      mockNotes.value = []
+    })
+
+    // A single note must render without error (edge case for sort on length-1 array).
+    test('renders correctly when there is only one note', () => {
+      mockNotes.value = [{ uri: 'https://pod.example.com/t/t_note_9999_z' }]
+      const wrapper = mount(HomeView, {
+        global: { plugins: [router], provide: makeProvide() }
+      })
+      expect(wrapper.text()).toContain('t_note_9999')
+      mockNotes.value = []
+    })
+
   })
 
 })
