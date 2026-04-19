@@ -17,13 +17,14 @@
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
-import { inject, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { inject, computed, onUnmounted, ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useTwinPodNoteCreate, useTwinPodNoteSearch, useTwinPodNotePreviews } from '@kaigilb/noteworld-notes'
 
 const { webId, logout, loading, error } = inject('auth')
 const podRoot = inject('podRoot')
 const router = useRouter()
+const route = useRoute()
 
 // --- Logout ---
 
@@ -66,6 +67,21 @@ function handleNewNote() {
 const { notes, loading: searchLoading, error: searchError, searchNotes } = useTwinPodNoteSearch()
 const { previews, loadPreviews } = useTwinPodNotePreviews()
 
+// S.OptimisticCreate read-guard: NoteEditorView.goHome() stashes the new
+// note URI in localStorage so it can appear in the list immediately — even
+// before TwinPod's search index has caught up with the PUT. We clear the
+// stash right away so a manual reload does not re-inject the entry
+// indefinitely (once indexing settles the search result takes over via dedup
+// in sortedNotes below).
+const pendingNoteUri = ref(null)
+try {
+  const stored = localStorage.getItem('noteworld:pendingNote')
+  if (stored) {
+    pendingNoteUri.value = stored
+    localStorage.removeItem('noteworld:pendingNote')
+  }
+} catch { /* ignore — localStorage unavailable in some browser contexts */ }
+
 // Search synchronously on mount so tests that assert "searchNotes called on
 // mount" pass without awaiting microtasks. The composable itself is async
 // internally; the call-site does not need to await for the assertion to land.
@@ -73,17 +89,24 @@ const { previews, loadPreviews } = useTwinPodNotePreviews()
 // flipping initialAuthDone, so this branch should always hit, but if
 // discovery + fallback both fail we skip the search rather than firing a
 // request against an empty URL.
-if (podRoot.value) {
+function runSearch() {
+  if (!podRoot.value) return
   searchNotes(podRoot.value).then((found) => {
     if (found && found.length > 0) loadPreviews(found.map(n => n.uri))
   })
 }
 
-function noteLabel(uri) {
-  // Last path segment — e.g. `t_note_1` from `https://pod/t/t_note_1`.
-  const idx = uri.lastIndexOf('/')
-  return idx >= 0 ? uri.slice(idx + 1) : uri
-}
+runSearch()
+
+// Kick off a preview fetch for the pending note immediately so its first line
+// of text is visible in the list without waiting for the delayed re-search.
+if (pendingNoteUri.value) loadPreviews([pendingNoteUri.value])
+
+// TwinPod indexes a newly PUT note within a few seconds of the write landing.
+// The first search fires before indexing settles; the delayed re-search surfaces
+// the new note without requiring the user to navigate away and back again.
+const rescanTimer = setTimeout(runSearch, 5000)
+onUnmounted(() => clearTimeout(rescanTimer))
 
 function noteDate(uri) {
   const match = uri.match(/t_note_(\d+)/)
@@ -94,13 +117,35 @@ function noteDate(uri) {
 // Sort newest-first. NoteWorld-minted URIs embed a ms timestamp in t_note_{ts}.
 // Notes without that pattern (e.g. legacy Graphmetrix nodes) get timestamp 0
 // and float to the bottom.
+// If a pending note exists (optimistic create — not yet indexed by TwinPod's
+// search) it is injected at the top provided the search hasn't already
+// returned it.
 const sortedNotes = computed(() => {
   const ts = uri => {
     const m = uri.match(/t_note_(\d+)/)
     return m ? Number(m[1]) : 0
   }
-  return [...notes.value].sort((a, b) => ts(b.uri) - ts(a.uri))
+  const all = [...notes.value]
+  if (pendingNoteUri.value && !all.some(n => n.uri === pendingNoteUri.value)) {
+    all.push({ uri: pendingNoteUri.value })
+  }
+  return all.sort((a, b) => ts(b.uri) - ts(a.uri))
 })
+
+// Pagination — keep the list responsive for large vaults (ARCH_05).
+// The visible count is URL-encoded (?count=N) so browser back/forward
+// preserves scroll position. router.replace is used (not push) so each
+// "Load more" click does not add a new history entry.
+const PAGE_SIZE = 50
+const displayCount = computed(() => {
+  const n = Number(route.query.count)
+  return Number.isFinite(n) && n > 0 ? n : PAGE_SIZE
+})
+const visibleNotes = computed(() => sortedNotes.value.slice(0, displayCount.value))
+
+function loadMore() {
+  router.replace({ path: route.path, query: { ...route.query, count: displayCount.value + PAGE_SIZE } })
+}
 
 function openNote(uri) {
   router.push({
@@ -155,22 +200,30 @@ function openNote(uri) {
       <p v-if="searchLoading" role="status" style="color: #595959;">Loading notes…</p>
       <p v-if="searchError" role="alert" style="color: #c00;">{{ searchError.message }}</p>
 
-      <p v-if="!searchLoading && !searchError && notes.length === 0" style="color: #595959;">
+      <p v-if="!searchLoading && !searchError && sortedNotes.length === 0" style="color: #595959;">
         No notes yet. Click "New Note" to get started.
       </p>
 
-      <ul v-if="notes.length > 0" style="list-style: none; padding: 0; margin: 0;">
-        <li v-for="note in sortedNotes" :key="note.uri" style="margin-bottom: 0.5rem;">
+      <ul v-if="sortedNotes.length > 0" style="list-style: none; padding: 0; margin: 0;">
+        <li v-for="note in visibleNotes" :key="note.uri" style="margin-bottom: 0.5rem;">
           <button
             @click="openNote(note.uri)"
+            :data-uri="note.uri"
             style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid #ccc; background: #fafafa; font-size: 0.9rem; min-height: 44px;"
           >
             <span v-if="previews[note.uri]" style="display: block;">{{ previews[note.uri] }}</span>
-            <span style="display: block; font-size: 0.85rem;">{{ noteLabel(note.uri) }}</span>
             <span style="display: block; font-size: 0.75rem; color: #696969;">{{ noteDate(note.uri) }}</span>
           </button>
         </li>
       </ul>
+
+      <button
+        v-if="sortedNotes.length > displayCount"
+        @click="loadMore"
+        style="margin-top: 0.75rem; width: 100%; padding: 0.75rem; cursor: pointer; border: 1px solid #ccc; background: transparent; font-size: 0.9rem; min-height: 44px; color: #1a73e8;"
+      >
+        Load more ({{ sortedNotes.length - displayCount }} remaining)
+      </button>
     </section>
 
   </main>

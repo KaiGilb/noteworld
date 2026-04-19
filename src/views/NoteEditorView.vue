@@ -55,6 +55,15 @@ const noteUri = computed(() => {
 // first successful save below.
 const isNew = computed(() => route.query.new === '1')
 
+// Plain-variable shadow of noteUri for use in onBeforeUnmount.
+// Vue Router may tear down the route injection before onBeforeUnmount fires
+// when the component is destroyed outside of normal navigation (e.g. direct
+// wrapper.unmount() in tests, or some programmatic teardown paths), making
+// noteUri.value null at that point. Tracking it here via watch ensures the
+// most recent non-null URI is always available during unmount.
+let lastKnownNoteUri = null
+watch(noteUri, (val) => { if (val) lastKnownNoteUri = val }, { immediate: true })
+
 // --- Note text + backing composables ---
 
 const text = ref('')
@@ -184,6 +193,21 @@ onBeforeUnmount(() => {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
   if (statusHideTimer) { clearTimeout(statusHideTimer); statusHideTimer = null }
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  // Belt-and-suspenders stash: goHome() covers the ← Notes button path;
+  // this covers browser-back and any other navigation away from the editor.
+  // Uses lastKnownNoteUri (not noteUri.value) — the router binding may be
+  // torn down before this hook fires in some environments. HomeView reads
+  // and clears the stash on mount.
+  if (lastKnownNoteUri) {
+    try { localStorage.setItem('noteworld:pendingNote', lastKnownNoteUri) } catch { /* ignore */ }
+    // Pre-seed the preview cache with the current textarea content so
+    // useTwinPodNotePreviews can show the first line immediately — the PUT
+    // that writes 'notetext:' completes ~3s after navigation, too late for
+    // the initial render.
+    if (text.value.trim()) {
+      try { localStorage.setItem('notetext:' + lastKnownNoteUri, text.value) } catch { /* ignore */ }
+    }
+  }
 })
 
 // --- Navigation ---
@@ -192,6 +216,11 @@ function goHome() {
   // Flush any pending edit before leaving so the user never loses work by
   // tapping Back within the debounce window.
   flushSave()
+  // Persist the note URI so HomeView can show it immediately even before
+  // TwinPod's search index has caught up with the write.
+  if (noteUri.value) {
+    try { localStorage.setItem('noteworld:pendingNote', noteUri.value) } catch { /* ignore */ }
+  }
   router.push({ path: '/' })
 }
 </script>

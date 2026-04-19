@@ -150,12 +150,14 @@ test.describe('HomeView — F.Find_Note note list', () => {
   })
 
   // Spec: F.Find_Note — The target note is located and presented to the user
+  // Increment: note buttons no longer render URI label text — find by [data-uri] attribute
   test('displays note URIs in the note list', async ({ mockTwinPod }) => {
-    await expect(mockTwinPod.page.getByText('t_note_1776287762997_2jw7')).toBeVisible()
-    await expect(mockTwinPod.page.getByText('t_note_1776287763100_8kx2')).toBeVisible()
+    await expect(mockTwinPod.page.locator(`[data-uri="${NOTE_1_URI}"]`)).toBeVisible()
+    await expect(mockTwinPod.page.locator(`[data-uri="${NOTE_2_URI}"]`)).toBeVisible()
   })
 
   // Spec: F.Find_Note — clicking a note navigates to the editor with the note URI
+  // Increment: click the note button by [data-uri] attribute (label text removed)
   test('clicking a note navigates to /app with target query param', async ({ mockTwinPod }) => {
     // Mock read-back for the note editor
     await mockTwinPod.page.route(`${NOTE_1_URI}**`, async route => {
@@ -172,7 +174,7 @@ test.describe('HomeView — F.Find_Note note list', () => {
       }
     })
 
-    await mockTwinPod.page.getByText('t_note_1776287762997_2jw7').click()
+    await mockTwinPod.page.locator(`[data-uri="${NOTE_1_URI}"]`).click()
     await mockTwinPod.page.waitForURL(/\/app/)
     const url = new URL(mockTwinPod.page.url())
     expect(url.pathname).toBe('/app')
@@ -181,8 +183,10 @@ test.describe('HomeView — F.Find_Note note list', () => {
   })
 
   // Spec: MOBILE_03 — note list buttons must have a minimum touch target of 44×44px
+  // Increment: find note button by [data-uri] attribute (label text removed)
   test('note list buttons have a touch target height of at least 44px', async ({ mockTwinPod }) => {
-    const noteButton = mockTwinPod.page.getByRole('button').filter({ hasText: 't_note_1776287762997_2jw7' })
+    const noteButton = mockTwinPod.page.locator(`[data-uri="${NOTE_1_URI}"]`)
+    await expect(noteButton).toBeVisible()
     const box = await noteButton.boundingBox()
     expect(box.height).toBeGreaterThanOrEqual(44)
   })
@@ -193,11 +197,81 @@ test.describe('HomeView — F.Find_Note note list', () => {
   })
 
   // Spec: Accessibility — page with notes rendered must meet WCAG 2.1 AA (VATester gap)
+  // Increment: wait for note render using [data-uri] locator (label text removed)
   test('has no accessibility violations with notes rendered', async ({ mockTwinPod }) => {
     // Wait for the note list to be rendered before running axe
-    await expect(mockTwinPod.page.getByText('t_note_1776287762997_2jw7')).toBeVisible()
+    await expect(mockTwinPod.page.locator(`[data-uri="${NOTE_1_URI}"]`)).toBeVisible()
     const results = await new AxeBuilder({ page: mockTwinPod.page }).analyze()
     expect(results.violations).toEqual([])
+  })
+
+})
+
+// --- Gap tests written by VATester (HomeView pagination revised increment) ---
+
+// Spec: HomeView pagination + ARCH_05 — "Load more" button appears when note count
+// exceeds PAGE_SIZE; clicking it encodes the new count in the URL (?count=N).
+
+// Build a Turtle response with n distinct note URIs
+function buildNotesTurtle(n, base) {
+  const lines = []
+  for (let i = 0; i < n; i++) {
+    lines.push(`<${base}/t/t_note_${1776287760000 + i}_aaaa> a sio:SIO_000110 .`)
+  }
+  lines.push('sio:SIO_000110 neo:m_cid "a_paragraph"^^xsd:string .')
+  return `@prefix neo: <https://neo.graphmetrix.net/node/> .\n@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n@prefix sio: <http://semanticscience.org/resource/> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n${lines.join('\n')}\n`
+}
+
+test.describe('HomeView — pagination (Load more)', () => {
+
+  test.beforeEach(async ({ mockTwinPod }) => {
+    // Return 51 notes so the "Load more" button is visible
+    await mockTwinPod.page.unroute(`${TWINPOD_BASE}/search/**`)
+    const turtleWith51 = buildNotesTurtle(51, TWINPOD_BASE)
+    await mockTwinPod.page.route(`${TWINPOD_BASE}/search/**`, async route => {
+      const method = route.request().method()
+      if (method === 'OPTIONS') {
+        await route.fulfill({ status: 204, headers: SEARCH_CORS_HEADERS, body: '' })
+      } else {
+        await route.fulfill({
+          status: 200,
+          headers: { ...SEARCH_CORS_HEADERS, 'Content-Type': 'text/turtle' },
+          body: turtleWith51
+        })
+      }
+    })
+    await mockTwinPod.page.goto('/')
+    await mockTwinPod.page.waitForURL('/')
+  })
+
+  // Spec: HomeView pagination — "Load more" button appears when note count > PAGE_SIZE (50)
+  test('shows "Load more" button when more than 50 notes are returned', async ({ mockTwinPod }) => {
+    // Wait for search results to load
+    await expect(mockTwinPod.page.getByRole('button', { name: /Load more/i })).toBeVisible()
+  })
+
+  // Spec: HomeView pagination + ARCH_05 — clicking "Load more" encodes count in URL
+  test('clicking "Load more" adds ?count=100 to the URL (ARCH_05)', async ({ mockTwinPod }) => {
+    await expect(mockTwinPod.page.getByRole('button', { name: /Load more/i })).toBeVisible()
+    await mockTwinPod.page.getByRole('button', { name: /Load more/i }).click()
+    const url = new URL(mockTwinPod.page.url())
+    expect(url.searchParams.get('count')).toBe('100')
+  })
+
+  // Spec: HomeView pagination — "Load more" button disappears after all notes are visible
+  test('"Load more" button disappears after clicking it reveals all notes (51 total)', async ({ mockTwinPod }) => {
+    await expect(mockTwinPod.page.getByRole('button', { name: /Load more/i })).toBeVisible()
+    await mockTwinPod.page.getByRole('button', { name: /Load more/i }).click()
+    // 51 notes, count now 100 — all notes visible, button gone
+    await expect(mockTwinPod.page.getByRole('button', { name: /Load more/i })).not.toBeVisible()
+  })
+
+  // Spec: MOBILE_03 — "Load more" button must have a minimum touch target of 44×44 px
+  test('"Load more" button has touch target height of at least 44px', async ({ mockTwinPod }) => {
+    const btn = mockTwinPod.page.getByRole('button', { name: /Load more/i })
+    await expect(btn).toBeVisible()
+    const box = await btn.boundingBox()
+    expect(box.height).toBeGreaterThanOrEqual(44)
   })
 
 })
@@ -229,16 +303,18 @@ test.describe('HomeView — F.Find_Note V.MobileUX 375px viewport', () => {
   })
 
   // Spec: V.MobileUX — note list must render without horizontal scroll at 375px
+  // Increment: wait for note render using [data-uri] locator (label text removed)
   test('note list page has no horizontal scroll at 375px', async ({ mockTwinPod }) => {
-    await expect(mockTwinPod.page.getByText('t_note_1776287762997_2jw7')).toBeVisible()
+    await expect(mockTwinPod.page.locator(`[data-uri="${NOTE_1_URI}"]`)).toBeVisible()
     const scrollWidth = await mockTwinPod.page.evaluate(() => document.documentElement.scrollWidth)
     const clientWidth = await mockTwinPod.page.evaluate(() => document.documentElement.clientWidth)
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
   })
 
   // Spec: V.MobileUX + MOBILE_03 — note list buttons must be at least 44x44 on 375px viewport
+  // Increment: find note button by [data-uri] attribute (label text removed)
   test('note list buttons have at least 44px touch target on 375px viewport', async ({ mockTwinPod }) => {
-    const noteButton = mockTwinPod.page.getByRole('button').filter({ hasText: 't_note_1776287762997_2jw7' })
+    const noteButton = mockTwinPod.page.locator(`[data-uri="${NOTE_1_URI}"]`)
     await expect(noteButton).toBeVisible()
     const box = await noteButton.boundingBox()
     expect(box.height).toBeGreaterThanOrEqual(44)

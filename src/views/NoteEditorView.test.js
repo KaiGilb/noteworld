@@ -333,6 +333,91 @@ describe('NoteEditorView', () => {
       expect(mockSaveNote).not.toHaveBeenCalled()
     })
 
+    // --- Gap tests written by VATester (belt-and-suspenders stash increment) ---
+
+    // Spec: S.OptimisticCreate read-guard — onBeforeUnmount writes the note URI to
+    // localStorage['noteworld:pendingNote'] as a belt-and-suspenders guard: goHome()
+    // covers the ← Notes button path; unmount covers browser-back and any other
+    // navigation away from the editor (Vue tears down the component via onBeforeUnmount
+    // regardless of how navigation was triggered).
+    test('onBeforeUnmount writes noteUri to localStorage[noteworld:pendingNote]', async () => {
+      localStorage.removeItem('noteworld:pendingNote')
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      wrapper.unmount()
+
+      expect(localStorage.getItem('noteworld:pendingNote')).toBe(NOTE_URI)
+      localStorage.removeItem('noteworld:pendingNote')
+    })
+
+    // When noteUri is null (no target query param), onBeforeUnmount must NOT write to
+    // localStorage — avoids inserting a null/empty entry that HomeView would fetch.
+    test('onBeforeUnmount does NOT write to localStorage when noteUri is null', async () => {
+      localStorage.removeItem('noteworld:pendingNote')
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      wrapper.unmount()
+
+      expect(localStorage.getItem('noteworld:pendingNote')).toBeNull()
+    })
+
+    // Spec: S.OptimisticCreate / useTwinPodNotePreviews — onBeforeUnmount pre-seeds
+    // localStorage['notetext:<noteUri>'] with the current textarea text so that
+    // HomeView's useTwinPodNotePreviews can show the first line immediately when the
+    // home list renders. The async PUT that writes 'notetext:' via the save composable
+    // completes ~3s after navigation — too late for the initial home list render.
+    test('onBeforeUnmount pre-seeds notetext:<noteUri> in localStorage when text is non-empty', async () => {
+      localStorage.removeItem('notetext:' + NOTE_URI)
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      // Type some text into the textarea so text.value is non-empty.
+      await wrapper.find('textarea').setValue('hello world')
+      wrapper.unmount()
+
+      expect(localStorage.getItem('notetext:' + NOTE_URI)).toBe('hello world')
+      localStorage.removeItem('notetext:' + NOTE_URI)
+    })
+
+    // When the textarea is empty or whitespace-only, onBeforeUnmount must NOT write
+    // notetext:<noteUri> — avoids overwriting a previously cached preview with an
+    // empty string (which would blank out the list preview after an undo or clear).
+    test('onBeforeUnmount does NOT write notetext:<noteUri> when text is empty', async () => {
+      localStorage.removeItem('notetext:' + NOTE_URI)
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      // Textarea starts empty (new note, no loadNote content).
+      wrapper.unmount()
+
+      expect(localStorage.getItem('notetext:' + NOTE_URI)).toBeNull()
+    })
+
+    // Whitespace-only text must also not be written — `.trim()` guards this path.
+    test('onBeforeUnmount does NOT write notetext:<noteUri> when text is whitespace-only', async () => {
+      localStorage.removeItem('notetext:' + NOTE_URI)
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI), new: '1' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('textarea').setValue('   ')
+      wrapper.unmount()
+
+      expect(localStorage.getItem('notetext:' + NOTE_URI)).toBeNull()
+      localStorage.removeItem('notetext:' + NOTE_URI)
+    })
+
   })
 
   describe('status indicator', () => {
@@ -375,6 +460,42 @@ describe('NoteEditorView', () => {
       await wrapper.find('button').trigger('click')
       await flushPromises()
       expect(router.currentRoute.value.path).toBe('/')
+    })
+
+    // --- Gap tests written by VATester (optimistic-stash increment) ---
+
+    // Spec: S.OptimisticCreate read-guard — goHome() must write the note URI to
+    // localStorage['noteworld:pendingNote'] so HomeView can inject it into the
+    // list immediately even before TwinPod's search index catches up.
+    test('goHome writes the note URI to localStorage[noteworld:pendingNote] before navigating', async () => {
+      localStorage.removeItem('noteworld:pendingNote')
+      const router = makeRouter()
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor', target: encodeURIComponent(NOTE_URI) } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('button').trigger('click')
+      await flushPromises()
+
+      expect(localStorage.getItem('noteworld:pendingNote')).toBe(NOTE_URI)
+      localStorage.removeItem('noteworld:pendingNote')
+    })
+
+    // When noteUri is null (no target query param), goHome must NOT write to
+    // localStorage — avoids inserting an empty or null entry that HomeView
+    // would then try to load previews for.
+    test('goHome does NOT write to localStorage when noteUri is null', async () => {
+      localStorage.removeItem('noteworld:pendingNote')
+      const router = makeRouter()
+      // Navigate to /app without a target query param.
+      await router.push({ path: '/app', query: { app: 'NoteWorld', navigator: 'editor' } })
+      const wrapper = mount(NoteEditorView, { global: { plugins: [router] } })
+      await flushPromises()
+
+      await wrapper.find('button').trigger('click')
+      await flushPromises()
+
+      expect(localStorage.getItem('noteworld:pendingNote')).toBeNull()
     })
 
     // Flushing on back prevents losing the last keystrokes if the user taps
