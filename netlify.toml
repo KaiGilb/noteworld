@@ -2,6 +2,10 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  VITE_TWINPOD_URL = "https://tst-first.demo.systemtwin.com"
+  VITE_HYPERGRAPH_CODE = "U2FsdGVkX1/S0rANmPZVe3xCIXvlGoGnGudwlp4wFSMFtte++kYYPt0l4B4407c+"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

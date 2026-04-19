@@ -58,6 +58,15 @@ describe('LoginView', () => {
       expect(wrapper.find('p[style*="color"]').exists()).toBe(false)
     })
 
+    // Gap: Accessibility Standard requires error messages to use role="alert" so screen readers
+    // announce them immediately. No test verifies this attribute is present on the error element.
+    test('error message has role="alert" for screen reader announcement', () => {
+      const wrapper = mount(LoginView, {
+        global: { provide: makeAuthProvide({ error: { message: 'Invalid issuer' } }) }
+      })
+      expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    })
+
   })
 
   describe('behaviour', () => {
@@ -70,6 +79,24 @@ describe('LoginView', () => {
       })
       await wrapper.find('button').trigger('click')
       expect(loginFn).toHaveBeenCalledOnce()
+    })
+
+    // --- Gap test written by QATester ---
+
+    // Spec: F.NoteWorld — clicking Connect must pass the OIDC issuer URL (VITE_TWINPOD_URL) to login()
+    // Gap: existing test verifies login is called once but never verifies the argument.
+    // If connect() passes the wrong URL, the OIDC flow silently targets the wrong issuer.
+    // import.meta.env.VITE_TWINPOD_URL is undefined in test env (jsdom) — we can verify
+    // that login() is called with exactly that value (undefined in test env = consistent).
+    test('calls login with the VITE_TWINPOD_URL env value as the oidcIssuer argument', async () => {
+      const loginFn = vi.fn()
+      const wrapper = mount(LoginView, {
+        global: { provide: makeAuthProvide({ loginFn }) }
+      })
+      await wrapper.find('button').trigger('click')
+      // In the Vite test environment, import.meta.env.VITE_TWINPOD_URL is not set —
+      // the important thing is that connect() passes it through directly without modification.
+      expect(loginFn).toHaveBeenCalledWith(import.meta.env.VITE_TWINPOD_URL)
     })
 
   })
@@ -85,6 +112,35 @@ describe('LoginView', () => {
       const results = await axe(wrapper.element)
       expect(results).toHaveNoViolations()
       wrapper.unmount()
+    })
+
+  })
+
+  // --- Gap tests written by VATester ---
+
+  describe('mobile touch targets (MOBILE_03)', () => {
+
+    // Spec: MOBILE_03 — every interactive element must have a minimum touch target of 44×44px.
+    // LoginView's "Connect to TwinPod" button has no min-height in its inline style.
+    // jsdom does not do CSS layout, so we check for an explicit min-height inline style.
+    test('Connect to TwinPod button declares a min-height of at least 44px in its inline style', () => {
+      const wrapper = mount(LoginView, {
+        global: { provide: makeAuthProvide() }
+      })
+      const button = wrapper.find('button')
+      const style = button.attributes('style') || ''
+      const match = style.match(/min-height:\s*([\d.]+)(px|rem)/)
+      if (!match) {
+        throw new Error(
+          `Connect to TwinPod button has no min-height in its inline style. ` +
+          `MOBILE_03 requires a minimum touch target of 44×44px. ` +
+          `Add style="min-height: 44px" or equivalent.`
+        )
+      }
+      const value = parseFloat(match[1])
+      const unit = match[2]
+      const pixels = unit === 'rem' ? value * 16 : value
+      expect(pixels).toBeGreaterThanOrEqual(44)
     })
 
   })

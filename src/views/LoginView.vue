@@ -28,7 +28,7 @@ function connect() {
     <button
       @click="connect"
       :disabled="loading"
-      style="padding: 0.75rem 2rem; font-size: 1rem; cursor: pointer; margin-top: 1rem;"
+      style="padding: 0.75rem 2rem; font-size: 1rem; cursor: pointer; margin-top: 1rem; min-height: 44px;"
     >
       Connect to TwinPod
     </button>
