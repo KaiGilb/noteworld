@@ -3,7 +3,7 @@
 /**
  * Reads a note's current text from its TwinPod resource.
  *
- * Fetches the resource Turtle via window.solid.session.fetch (no hypergraph
+ * Fetches the resource Turtle via ur.fetchResourceTurtle (no hypergraph
  * header — avoids TwinPod returning the full pod knowledge graph instead of
  * the specific resource), parses it into a local temp graph, then queries for
  * all statements with the text predicate. Returns the last value — TwinPod
@@ -45,26 +45,19 @@ export function useTwinPodNoteRead({ predicateUri = DEFAULT_TEXT_PREDICATE } = {
     error.value = null
 
     try {
-      // Use session.fetch directly — no hypergraph header, so TwinPod returns
+      // ur.fetchResourceTurtle bypasses the hypergraph header so TwinPod returns
       // the actual resource Turtle instead of the full pod knowledge graph.
-      const response = await window.solid.session.fetch(noteResourceUrl, {
-        headers: {
-          Accept: 'text/turtle',
-          'Cache-Control': 'max-age=0'
-        }
-      })
+      const { ok, status, turtle } = await ur.fetchResourceTurtle(noteResourceUrl)
 
-      if (response.status === 404) {
+      if (status === 404) {
         error.value = { type: 'not-found', message: `Note not found: ${noteResourceUrl}` }
         return null
       }
 
-      if (!response.ok) {
-        error.value = { type: 'http', status: response.status, message: `HTTP ${response.status}` }
+      if (!ok) {
+        error.value = { type: 'http', status, message: `HTTP ${status}` }
         return null
       }
-
-      const turtle = await response.text()
       const tempGraph = ur.$rdf.graph()
       ur.$rdf.parse(turtle, tempGraph, noteResourceUrl, 'text/turtle')
       const pred = ur.$rdf.sym(predicateUri)

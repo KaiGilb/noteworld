@@ -1,112 +1,90 @@
 // UNIT_TYPE=Hook
 //
-// Tests for useTwinPodNoteSearch (5.1.4 — two-phase type-driven discovery).
+// Tests for useTwinPodNoteSearch (5.1.8 — two-step SIO class resolution).
 //
 // Design under test:
-//   Phase 1 — enumerate candidate URIs from each `containerPaths` entry
-//     via ur.hyperFetch; parse Turtle into a TEMPORARY rdflib graph;
-//     collect ldp:contains objects. LDP metadata must not leak into
-//     ur.rdfStore.
-//   Phase 2 — load each candidate via ur.fetchAndSaveTurtle (parses into
-//     shared ur.rdfStore). After all GETs settle, one match on
-//     rdf:type ∈ typeUris (default schema:Note ∪ neo:a_note) filtered
-//     to the candidate set.
+//   For each typeUri, derive the Neo concept name (last path segment)
+//   and call ur.searchAndGetURIs(podRoot, conceptName, { force: true }).
+//   After all searches settle, a two-step lookup finds notes:
+//     1. ur.rdfStore.match(null, neo:m_cid, null) — wildcard on object —
+//        then filter by st.object.value === conceptName.
+//        This yields the SIO class URI (e.g. sio:SIO_000110) that the pod
+//        uses as the rdf:type for notes of this concept.
+//     2. ur.rdfStore.match(null, rdf:type, classNode) — subjects are notes.
 //
-//   Errors: 'discovery-error' only when every container listing fails.
-//   Individual note GET failures are tolerated (missing from result).
-//   URI prefix / path is NEVER a filter — a resource is a note iff its
-//   RDF type matches, no matter where it lives.
-//
-// Why the previous approach failed:
-//   5.1.3's /search-based discovery relied on the pod's per-pod concept
-//   index. tst-ia2 does not index the notes under 'note' or 'notes' at
-//   all — /search/note is 200 empty-body, /search/notes returns an
-//   unrelated resource. Container listing is the only primitive that
-//   works on every pod we've tested (/t/ returns 200 with all 15 notes
-//   as ldp:contains relations).
+// Why SIO class URIs, not neo:a_paragraph directly:
+//   The real pod (tst-ia2.demo.systemtwin.com) search endpoint returns
+//   Turtle where notes carry rdf:type sio:SIO_000110, and the class node
+//   carries neo:m_cid "a_paragraph". Direct rdf:type neo:a_paragraph is
+//   absent. Verified 2026-04-19 via live debug panel in HomeView.
 
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 
+// --- SIO class URI constants used as stand-ins in tests ---
+const SIO_PARAGRAPH = 'http://semanticscience.org/resource/SIO_000110' // real pod value
+const SIO_NOTE      = 'http://semanticscience.org/resource/SIO_000020' // hypothetical for a_note tests
+
 const {
-  mockHyperFetch,
-  mockFetchAndSaveTurtle,
-  mockStoreMatch,
-  mockTempGraphFactory,
-  mockRdfParse
+  mockSearchAndGetURIs,
+  mockStoreMatch
 } = vi.hoisted(() => ({
-  mockHyperFetch: vi.fn(),
-  mockFetchAndSaveTurtle: vi.fn(),
-  mockStoreMatch: vi.fn(),
-  // A factory so every listContainer call gets a FRESH temp graph —
-  // we can then assert the shared store is never passed to rdf.parse.
-  mockTempGraphFactory: vi.fn(),
-  mockRdfParse: vi.fn()
+  mockSearchAndGetURIs: vi.fn(),
+  mockStoreMatch: vi.fn()
 }))
 
 vi.mock('@kaigilb/twinpod-client', () => ({
   ur: {
-    hyperFetch: (...args) => mockHyperFetch(...args),
-    fetchAndSaveTurtle: (...args) => mockFetchAndSaveTurtle(...args),
+    searchAndGetURIs: (...args) => mockSearchAndGetURIs(...args),
     rdfStore: { match: (...args) => mockStoreMatch(...args) },
     $rdf: {
-      graph: (...args) => mockTempGraphFactory(...args),
-      parse: (...args) => mockRdfParse(...args),
       sym: (value) => ({ value, termType: 'NamedNode' })
     },
     NS: {
-      RDF:    (name) => ({ value: `http://www.w3.org/1999/02/22-rdf-syntax-ns#${name}`, termType: 'NamedNode' }),
-      NEO:    (name) => ({ value: `https://neo.graphmetrix.net/node/${name}`, termType: 'NamedNode' }),
-      SCHEMA: (name) => ({ value: `http://schema.org/${name}`, termType: 'NamedNode' }),
-      LDP:    (name) => ({ value: `http://www.w3.org/ns/ldp#${name}`, termType: 'NamedNode' })
+      RDF: (name) => ({ value: `http://www.w3.org/1999/02/22-rdf-syntax-ns#${name}`, termType: 'NamedNode' }),
+      NEO: (name) => ({ value: `https://neo.graphmetrix.net/node/${name}`, termType: 'NamedNode' })
     }
   }
 }))
 
-// Helper: mock a successful container listing at the given URL returning
-// the given child URIs as ldp:contains objects. Each call to $rdf.graph()
-// produces a fresh mini-graph whose .match() returns the injected URIs.
-function setContainerListing(containerUrl, uris) {
-  mockHyperFetch.mockImplementation(async (url) => {
-    if (url === containerUrl) {
-      return { ok: true, status: 200, text: async () => '<turtle>' }
-    }
-    return { ok: false, status: 404, text: async () => '' }
-  })
-  mockRdfParse.mockImplementation(() => {})
-  mockTempGraphFactory.mockImplementation(() => ({
-    match: () => uris.map(u => ({ object: { value: u } }))
-  }))
-}
+// ---------------------------------------------------------------------------
+// Helper — configure what rdfStore.match returns for the two-step SIO lookup.
+//
+// mcidResults: array of { conceptName, classUri } — returned by the
+//   neo:m_cid wildcard match (step 1).
+// typeResults: { classUri: [noteUri, ...] } — returned by the rdf:type
+//   match for each class node (step 2).
+// ---------------------------------------------------------------------------
+function setStoreMatches({ mcidResults = [], typeResults = {} } = {}) {
+  mockStoreMatch.mockImplementation((subject, predicate, object) => {
+    const pred = predicate?.value
 
-// Helper: the shared store match is type-aware — returns subjects by type.
-function setStoreTypeHits({ schemaNote = [], neoANote = [], other = {} } = {}) {
-  mockStoreMatch.mockImplementation((_s, _p, object) => {
-    if (object?.value === 'http://schema.org/Note') {
-      return schemaNote.map(uri => ({ subject: { value: uri } }))
+    // Step 1 call: match(null, neo:m_cid, null)
+    if (pred === 'https://neo.graphmetrix.net/node/m_cid') {
+      return mcidResults.map(({ conceptName, classUri }) => ({
+        subject: { value: classUri },
+        object:  { value: conceptName }
+      }))
     }
-    if (object?.value === 'https://neo.graphmetrix.net/node/a_note') {
-      return neoANote.map(uri => ({ subject: { value: uri } }))
+
+    // Step 2 call: match(null, rdf:type, classNode)
+    if (pred === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type') {
+      const classUri = object?.value
+      return (typeResults[classUri] ?? []).map(uri => ({ subject: { value: uri } }))
     }
-    if (other[object?.value]) {
-      return other[object.value].map(uri => ({ subject: { value: uri } }))
-    }
+
     return []
   })
 }
 
 import { useTwinPodNoteSearch } from './useTwinPodNoteSearch.js'
 
-const POD = 'https://tst-first.demo.systemtwin.com'
+const POD = 'https://tst-ia2.demo.systemtwin.com'
 
 beforeEach(() => {
-  mockHyperFetch.mockReset()
-  mockFetchAndSaveTurtle.mockReset()
+  mockSearchAndGetURIs.mockReset()
   mockStoreMatch.mockReset()
-  mockTempGraphFactory.mockReset()
-  mockRdfParse.mockReset()
-  // Defaults: container listing succeeds with zero contents; store is empty.
-  setContainerListing(`${POD}/t/`, [])
-  mockFetchAndSaveTurtle.mockResolvedValue({ success: true })
+  // Default: searches resolve OK, store returns no hits.
+  mockSearchAndGetURIs.mockResolvedValue({ response: '', status: 200 })
   mockStoreMatch.mockReturnValue([])
 })
 
@@ -126,276 +104,234 @@ describe('useTwinPodNoteSearch — initial state', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('useTwinPodNoteSearch — Phase 1: container enumeration', () => {
-  // Spec: F.Find_Note — Phase 1 lists every path in containerPaths.
-  test('lists the default /t/ container on the pod', async () => {
+describe('useTwinPodNoteSearch — search calls', () => {
+  test('calls ur.searchAndGetURIs once per default typeUri', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    expect(mockHyperFetch).toHaveBeenCalledTimes(1)
-    expect(mockHyperFetch.mock.calls[0][0]).toBe(`${POD}/t/`)
-    expect(mockHyperFetch.mock.calls[0][1].method).toBe('GET')
-    expect(mockHyperFetch.mock.calls[0][1].headers.Accept).toBe('text/turtle')
+    expect(mockSearchAndGetURIs).toHaveBeenCalledTimes(2)
   })
 
-  test('strips trailing slash from podRoot before composing the container URL', async () => {
-    const { searchNotes } = useTwinPodNoteSearch()
-    await searchNotes(`${POD}/`)
-    expect(mockHyperFetch.mock.calls[0][0]).toBe(`${POD}/t/`)
-  })
-
-  test('supports custom containerPaths (multiple containers in parallel)', async () => {
-    mockHyperFetch.mockResolvedValue({ ok: true, status: 200, text: async () => '<turtle>' })
-    mockTempGraphFactory.mockReturnValue({ match: () => [] })
-    const { searchNotes } = useTwinPodNoteSearch({ containerPaths: ['/notes/', '/archive/'] })
-    await searchNotes(POD)
-    const urls = mockHyperFetch.mock.calls.map(c => c[0]).sort()
-    expect(urls).toEqual([`${POD}/archive/`, `${POD}/notes/`])
-  })
-
-  test('falls back to default containerPaths when opts.containerPaths is empty', async () => {
-    const { searchNotes } = useTwinPodNoteSearch({ containerPaths: [] })
-    await searchNotes(POD)
-    expect(mockHyperFetch.mock.calls[0][0]).toBe(`${POD}/t/`)
-  })
-
-  test('falls back to default containerPaths when opts.containerPaths is non-array', async () => {
-    const { searchNotes } = useTwinPodNoteSearch({ containerPaths: '/t/' })
-    await searchNotes(POD)
-    expect(mockHyperFetch.mock.calls[0][0]).toBe(`${POD}/t/`)
-  })
-})
-
-// ---------------------------------------------------------------------------
-
-describe('useTwinPodNoteSearch — Phase 2: per-candidate GET', () => {
-  // Spec: F.Find_Note — Phase 2 fires one fetchAndSaveTurtle per candidate
-  // to populate the shared rdfStore with their rdf:type triples.
-  test('fires one fetchAndSaveTurtle per enumerated candidate', async () => {
-    const candidates = [
-      `${POD}/t/t_note_aaa`,
-      `${POD}/t/t_note_bbb`,
-      `${POD}/t/t_note_ccc`
-    ]
-    setContainerListing(`${POD}/t/`, candidates)
+  test('passes the pod root as first argument', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    expect(mockFetchAndSaveTurtle).toHaveBeenCalledTimes(3)
-    const fetched = mockFetchAndSaveTurtle.mock.calls.map(c => c[0]).sort()
-    expect(fetched).toEqual([...candidates].sort())
+    for (const call of mockSearchAndGetURIs.mock.calls) {
+      expect(call[0]).toBe(POD)
+    }
   })
 
-  test('does NOT fire any fetchAndSaveTurtle when the container is empty', async () => {
-    setContainerListing(`${POD}/t/`, [])
+  // Spec: F.Find_Note — concept name is the Neo identifier, not a label.
+  test('derives concept name a_paragraph from the neo:a_paragraph URI', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    expect(mockFetchAndSaveTurtle).not.toHaveBeenCalled()
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1])
+    expect(concepts).toContain('a_paragraph')
   })
 
-  // Spec: F.Find_Note — per-candidate failures are isolated; a 404 on one
-  // note must not poison the whole result. That note simply won't appear.
-  test('a rejected per-candidate GET does not abort the others', async () => {
-    const candidates = [
-      `${POD}/t/t_note_ok1`,
-      `${POD}/t/t_note_broken`,
-      `${POD}/t/t_note_ok2`
-    ]
-    setContainerListing(`${POD}/t/`, candidates)
-    mockFetchAndSaveTurtle.mockImplementation(async (uri) => {
-      if (uri.includes('broken')) throw new Error('404')
-      return { success: true }
-    })
-    setStoreTypeHits({
-      schemaNote: [`${POD}/t/t_note_ok1`, `${POD}/t/t_note_ok2`]
-    })
-    const { searchNotes, error } = useTwinPodNoteSearch()
-    const result = await searchNotes(POD)
-    expect(result.map(r => r.uri).sort()).toEqual([
-      `${POD}/t/t_note_ok1`, `${POD}/t/t_note_ok2`
-    ])
-    expect(error.value).toBeNull()
-  })
-})
-
-// ---------------------------------------------------------------------------
-
-describe('useTwinPodNoteSearch — type filter (schema:Note ∪ neo:a_note)', () => {
-  // Spec: F.Find_Note — the filter runs against ur.rdfStore (populated by
-  // Phase 2), matching subjects typed either schema:Note or neo:a_note.
-
-  test('returns candidates typed schema:Note', async () => {
-    const candidates = [`${POD}/t/t_note_a`, `${POD}/t/t_note_b`]
-    setContainerListing(`${POD}/t/`, candidates)
-    setStoreTypeHits({ schemaNote: candidates })
-    const { searchNotes } = useTwinPodNoteSearch()
-    const result = await searchNotes(POD)
-    expect(result.map(r => r.uri).sort()).toEqual([...candidates].sort())
-  })
-
-  test('returns candidates typed neo:a_note', async () => {
-    const candidates = [`${POD}/t/t_note_x`]
-    setContainerListing(`${POD}/t/`, candidates)
-    setStoreTypeHits({ neoANote: candidates })
-    const { searchNotes } = useTwinPodNoteSearch()
-    const result = await searchNotes(POD)
-    expect(result.map(r => r.uri)).toEqual(candidates)
-  })
-
-  test('queries the store with BOTH schema:Note and neo:a_note type objects', async () => {
-    setContainerListing(`${POD}/t/`, [`${POD}/t/t_note_a`])
+  test('derives concept name a_note from the neo:a_note URI', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    const objectValues = mockStoreMatch.mock.calls.map(call => call[2].value)
-    expect(objectValues).toContain('http://schema.org/Note')
-    expect(objectValues).toContain('https://neo.graphmetrix.net/node/a_note')
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1])
+    expect(concepts).toContain('a_note')
   })
 
-  // Spec: F.Find_Note — the default typeUris list is configurable. A
-  // caller can narrow or broaden it (e.g. for a future Note subtype).
-  test('accepts a custom typeUris list and queries each type', async () => {
-    setContainerListing(`${POD}/t/`, [`${POD}/t/t_note_a`])
+  // Spec: force: true bypasses the ur.searchAndGetURIs session cache.
+  test('passes force: true to bypass the search cache', async () => {
+    const { searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    for (const call of mockSearchAndGetURIs.mock.calls) {
+      expect(call[2]).toMatchObject({ force: true })
+    }
+  })
+
+  test('accepts a custom typeUris list and searches each derived concept', async () => {
     const { searchNotes } = useTwinPodNoteSearch({
-      typeUris: ['http://example.org/TypeOne', 'http://example.org/TypeTwo']
-    })
-    await searchNotes(POD)
-    const objectValues = mockStoreMatch.mock.calls.map(call => call[2].value)
-    expect(objectValues).toContain('http://example.org/TypeOne')
-    expect(objectValues).toContain('http://example.org/TypeTwo')
-  })
-
-  test('custom typeUris filters out candidates typed only schema:Note', async () => {
-    const candidates = [`${POD}/t/t_only_schema`, `${POD}/t/t_only_custom`]
-    setContainerListing(`${POD}/t/`, candidates)
-    setStoreTypeHits({
-      schemaNote: [`${POD}/t/t_only_schema`],
-      other: { 'http://example.org/CustomType': [`${POD}/t/t_only_custom`] }
-    })
-    const { searchNotes } = useTwinPodNoteSearch({
-      typeUris: ['http://example.org/CustomType']
-    })
-    const result = await searchNotes(POD)
-    expect(result.map(r => r.uri)).toEqual([`${POD}/t/t_only_custom`])
-  })
-
-  // Spec: F.Find_Note — the type match must exclude subjects not in the
-  // enumerated candidate set. Otherwise unrelated triples already in the
-  // store (from other composables on the same page) could leak in.
-  test('only returns candidate subjects, never leaks non-candidate store hits', async () => {
-    const candidates = [`${POD}/t/t_note_real`]
-    setContainerListing(`${POD}/t/`, candidates)
-    setStoreTypeHits({
-      schemaNote: [
-        `${POD}/t/t_note_real`,
-        `${POD}/somewhere/else/leak_note`  // present in store, NOT a candidate
+      typeUris: [
+        'https://neo.graphmetrix.net/node/a_task',
+        'https://neo.graphmetrix.net/node/a_event'
       ]
     })
+    await searchNotes(POD)
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1]).sort()
+    expect(concepts).toEqual(['a_event', 'a_task'])
+  })
+
+  test('falls back to default typeUris when opts.typeUris is empty', async () => {
+    const { searchNotes } = useTwinPodNoteSearch({ typeUris: [] })
+    await searchNotes(POD)
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1])
+    expect(concepts).toContain('a_paragraph')
+    expect(concepts).toContain('a_note')
+  })
+
+  test('falls back to default typeUris when opts.typeUris is non-array', async () => {
+    const { searchNotes } = useTwinPodNoteSearch({ typeUris: 'a_paragraph' })
+    await searchNotes(POD)
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1])
+    expect(concepts).toContain('a_paragraph')
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('useTwinPodNoteSearch — SIO type filter', () => {
+  // The search response maps neo:m_cid → SIO class → rdf:type → note URIs.
+
+  test('returns notes resolved via neo:m_cid → SIO class → rdf:type for a_paragraph', async () => {
+    setStoreMatches({
+      mcidResults: [{ conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH }],
+      typeResults:  { [SIO_PARAGRAPH]: [`${POD}/node/t_note_a`, `${POD}/node/t_note_b`] }
+    })
     const { searchNotes } = useTwinPodNoteSearch()
     const result = await searchNotes(POD)
-    expect(result.map(r => r.uri)).toEqual([`${POD}/t/t_note_real`])
+    expect(result.map(r => r.uri).sort()).toEqual([
+      `${POD}/node/t_note_a`, `${POD}/node/t_note_b`
+    ])
+  })
+
+  test('returns notes resolved via neo:m_cid → SIO class → rdf:type for a_note', async () => {
+    setStoreMatches({
+      mcidResults: [{ conceptName: 'a_note', classUri: SIO_NOTE }],
+      typeResults:  { [SIO_NOTE]: [`${POD}/node/t_note_x`] }
+    })
+    const { searchNotes } = useTwinPodNoteSearch()
+    const result = await searchNotes(POD)
+    expect(result.map(r => r.uri)).toEqual([`${POD}/node/t_note_x`])
+  })
+
+  test('calls store.match with neo:m_cid predicate (not rdf:type directly on the typeUri)', async () => {
+    const { searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    const predicates = mockStoreMatch.mock.calls.map(c => c[1]?.value)
+    expect(predicates).toContain('https://neo.graphmetrix.net/node/m_cid')
+    // Must NOT query rdf:type neo:a_paragraph directly — types come via SIO class.
+    const typeObjects = mockStoreMatch.mock.calls
+      .filter(c => c[1]?.value === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type')
+      .map(c => c[2]?.value)
+    expect(typeObjects).not.toContain('https://neo.graphmetrix.net/node/a_paragraph')
+  })
+
+  test('returns [] when no neo:m_cid class node is found in store for any typeUri', async () => {
+    // Default mock returns [] for all store.match calls.
+    const { searchNotes } = useTwinPodNoteSearch()
+    const result = await searchNotes(POD)
+    expect(result).toEqual([])
+  })
+
+  test('custom typeUris drives the m_cid lookup to only those concept names', async () => {
+    setStoreMatches({
+      mcidResults: [
+        { conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH },
+        { conceptName: 'a_custom',    classUri: 'http://example.org/CustomClass' }
+      ],
+      typeResults: {
+        [SIO_PARAGRAPH]:             [`${POD}/node/t_para`],
+        'http://example.org/CustomClass': [`${POD}/node/t_custom`]
+      }
+    })
+    const { searchNotes } = useTwinPodNoteSearch({
+      typeUris: ['http://example.org/vocab/a_custom']
+    })
+    const result = await searchNotes(POD)
+    // Only a_custom notes returned — a_paragraph was not in typeUris.
+    expect(result.map(r => r.uri)).toEqual([`${POD}/node/t_custom`])
+  })
+
+  test('excludes the SIO class node itself from note results', async () => {
+    // Defensive guard: if the class node somehow appears in the rdf:type match,
+    // the uri !== classNode.value filter must exclude it.
+    setStoreMatches({
+      mcidResults: [{ conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH }],
+      typeResults:  { [SIO_PARAGRAPH]: [`${POD}/node/t_note_a`, SIO_PARAGRAPH] }
+    })
+    const { searchNotes } = useTwinPodNoteSearch()
+    const result = await searchNotes(POD)
+    expect(result.map(r => r.uri)).toContain(`${POD}/node/t_note_a`)
+    expect(result.map(r => r.uri)).not.toContain(SIO_PARAGRAPH)
   })
 })
 
 // ---------------------------------------------------------------------------
 
 describe('useTwinPodNoteSearch — union and dedup', () => {
-  // Spec: F.Find_Note — a candidate typed both schema:Note and neo:a_note
-  // must appear exactly once.
-  test('dedupes a candidate typed both schema:Note and neo:a_note', async () => {
-    const shared = `${POD}/t/t_note_both`
-    setContainerListing(`${POD}/t/`, [shared])
-    setStoreTypeHits({ schemaNote: [shared], neoANote: [shared] })
+  test('dedupes a note found under both a_paragraph and a_note SIO classes', async () => {
+    const shared = `${POD}/node/t_note_both`
+    setStoreMatches({
+      mcidResults: [
+        { conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH },
+        { conceptName: 'a_note',      classUri: SIO_NOTE }
+      ],
+      typeResults: {
+        [SIO_PARAGRAPH]: [shared],
+        [SIO_NOTE]:      [shared]
+      }
+    })
     const { searchNotes } = useTwinPodNoteSearch()
     const result = await searchNotes(POD)
     expect(result.filter(r => r.uri === shared).length).toBe(1)
   })
 
-  test('unions candidates from multiple containers', async () => {
-    mockHyperFetch.mockImplementation(async (url) => {
-      if (url === `${POD}/t/` || url === `${POD}/archive/`) {
-        return { ok: true, status: 200, text: async () => '<turtle>' }
+  test('unions results from both type searches', async () => {
+    setStoreMatches({
+      mcidResults: [
+        { conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH },
+        { conceptName: 'a_note',      classUri: SIO_NOTE }
+      ],
+      typeResults: {
+        [SIO_PARAGRAPH]: [`${POD}/node/t_para`],
+        [SIO_NOTE]:      [`${POD}/node/t_legacy`]
       }
-      return { ok: false, status: 404, text: async () => '' }
     })
-    mockTempGraphFactory
-      .mockReturnValueOnce({
-        match: () => [{ object: { value: `${POD}/t/t_note_live` } }]
-      })
-      .mockReturnValueOnce({
-        match: () => [{ object: { value: `${POD}/archive/t_note_old` } }]
-      })
-    setStoreTypeHits({
-      schemaNote: [`${POD}/t/t_note_live`, `${POD}/archive/t_note_old`]
-    })
-    const { searchNotes } = useTwinPodNoteSearch({
-      containerPaths: ['/t/', '/archive/']
-    })
+    const { searchNotes } = useTwinPodNoteSearch()
     const result = await searchNotes(POD)
     expect(result.map(r => r.uri).sort()).toEqual([
-      `${POD}/archive/t_note_old`, `${POD}/t/t_note_live`
+      `${POD}/node/t_legacy`,
+      `${POD}/node/t_para`
     ])
-  })
-
-  test('dedupes a candidate that appears in multiple container listings', async () => {
-    const shared = `${POD}/t/t_note_dup`
-    mockHyperFetch.mockResolvedValue({ ok: true, status: 200, text: async () => '<turtle>' })
-    mockTempGraphFactory.mockReturnValue({
-      match: () => [{ object: { value: shared } }]
-    })
-    setStoreTypeHits({ schemaNote: [shared] })
-    const { searchNotes } = useTwinPodNoteSearch({
-      containerPaths: ['/a/', '/b/']
-    })
-    const result = await searchNotes(POD)
-    expect(result.filter(r => r.uri === shared).length).toBe(1)
-    // Phase 2 should also dedup the GET — one candidate, one fetch.
-    expect(mockFetchAndSaveTurtle).toHaveBeenCalledTimes(1)
   })
 })
 
 // ---------------------------------------------------------------------------
 
 describe('useTwinPodNoteSearch — error handling', () => {
-  // Spec: F.Find_Note — only when EVERY container listing fails do we
-  // set discovery-error. A single-container failure in a multi-container
-  // config is tolerated.
-
-  test('sets discovery-error when the only container listing fails (non-ok HTTP)', async () => {
-    mockHyperFetch.mockResolvedValue({ ok: false, status: 403, text: async () => '' })
+  test('sets search-error when all searches resolve with error flag', async () => {
+    mockSearchAndGetURIs.mockResolvedValue({ error: 'true' })
     const { searchNotes, error } = useTwinPodNoteSearch()
     expect(await searchNotes(POD)).toEqual([])
-    expect(error.value?.type).toBe('discovery-error')
+    expect(error.value?.type).toBe('search-error')
   })
 
-  test('sets discovery-error when the only container listing throws', async () => {
-    mockHyperFetch.mockRejectedValue(new Error('offline'))
+  test('sets search-error when all searches return HTTP 500', async () => {
+    mockSearchAndGetURIs.mockResolvedValue({ response: 'Server Error', status: 500 })
     const { searchNotes, error } = useTwinPodNoteSearch()
     expect(await searchNotes(POD)).toEqual([])
-    expect(error.value?.type).toBe('discovery-error')
+    expect(error.value?.type).toBe('search-error')
   })
 
-  test('does NOT set error when one of multiple containers fails but another succeeds', async () => {
-    mockHyperFetch.mockImplementation(async (url) => {
-      if (url === `${POD}/t/`) {
-        return { ok: true, status: 200, text: async () => '<turtle>' }
-      }
-      return { ok: false, status: 403, text: async () => '' }
-    })
-    mockTempGraphFactory.mockReturnValue({
-      match: () => [{ object: { value: `${POD}/t/t_note_a` } }]
-    })
-    setStoreTypeHits({ schemaNote: [`${POD}/t/t_note_a`] })
-    const { searchNotes, error } = useTwinPodNoteSearch({
-      containerPaths: ['/t/', '/forbidden/']
-    })
-    const result = await searchNotes(POD)
-    expect(result.map(r => r.uri)).toEqual([`${POD}/t/t_note_a`])
-    expect(error.value).toBeNull()
+  test('sets search-error when all searches reject', async () => {
+    mockSearchAndGetURIs.mockRejectedValue(new Error('network'))
+    const { searchNotes, error } = useTwinPodNoteSearch()
+    expect(await searchNotes(POD)).toEqual([])
+    expect(error.value?.type).toBe('search-error')
   })
 
-  test('returns [] with no error when container is empty (legitimate empty state)', async () => {
-    setContainerListing(`${POD}/t/`, [])
+  test('does NOT set error when searches succeed but return no notes (empty pod)', async () => {
     const { searchNotes, error } = useTwinPodNoteSearch()
     const result = await searchNotes(POD)
     expect(result).toEqual([])
+    expect(error.value).toBeNull()
+  })
+
+  test('does NOT set error when one search fails but another succeeds with notes', async () => {
+    mockSearchAndGetURIs
+      .mockResolvedValueOnce({ response: '', status: 200 })  // a_paragraph ok
+      .mockRejectedValueOnce(new Error('network'))            // a_note fails
+    setStoreMatches({
+      mcidResults: [{ conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH }],
+      typeResults:  { [SIO_PARAGRAPH]: [`${POD}/node/t_note_a`] }
+    })
+    const { searchNotes, error } = useTwinPodNoteSearch()
+    const result = await searchNotes(POD)
+    expect(result.map(r => r.uri)).toEqual([`${POD}/node/t_note_a`])
     expect(error.value).toBeNull()
   })
 })
@@ -403,21 +339,20 @@ describe('useTwinPodNoteSearch — error handling', () => {
 // ---------------------------------------------------------------------------
 
 describe('useTwinPodNoteSearch — input validation', () => {
-  test('sets invalid-input error and returns [] when podRoot is empty', async () => {
+  test('sets invalid-input and returns [] when podRoot is empty string', async () => {
     const { error, searchNotes } = useTwinPodNoteSearch()
     expect(await searchNotes('')).toEqual([])
     expect(error.value?.type).toBe('invalid-input')
-    expect(mockHyperFetch).not.toHaveBeenCalled()
-    expect(mockFetchAndSaveTurtle).not.toHaveBeenCalled()
+    expect(mockSearchAndGetURIs).not.toHaveBeenCalled()
   })
 
-  test('sets invalid-input error when podRoot is null', async () => {
+  test('sets invalid-input when podRoot is null', async () => {
     const { error, searchNotes } = useTwinPodNoteSearch()
     await searchNotes(null)
     expect(error.value?.type).toBe('invalid-input')
   })
 
-  test('sets invalid-input error when podRoot is undefined', async () => {
+  test('sets invalid-input when podRoot is undefined', async () => {
     const { error, searchNotes } = useTwinPodNoteSearch()
     await searchNotes(undefined)
     expect(error.value?.type).toBe('invalid-input')
@@ -427,21 +362,20 @@ describe('useTwinPodNoteSearch — input validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('useTwinPodNoteSearch — loading transition', () => {
-  test('loading is true while discovery is in progress', async () => {
-    // Hold Phase 1 open — the hyperFetch promise stays pending, so
-    // loading.value is locked to true until we release it.
-    let releaseListing
-    mockHyperFetch.mockImplementationOnce(() => new Promise(r => { releaseListing = r }))
+  test('loading is true while searches are in flight', async () => {
+    let releaseSearch
+    mockSearchAndGetURIs.mockImplementationOnce(
+      () => new Promise(r => { releaseSearch = r })
+    )
     const { loading, searchNotes } = useTwinPodNoteSearch()
     const promise = searchNotes(POD)
     expect(loading.value).toBe(true)
-    releaseListing({ ok: true, status: 200, text: async () => '<turtle>' })
-    mockTempGraphFactory.mockReturnValue({ match: () => [] })
+    releaseSearch({ response: '', status: 200 })
     await promise
     expect(loading.value).toBe(false)
   })
 
-  test('loading is false after discovery completes successfully', async () => {
+  test('loading is false after searches complete', async () => {
     const { loading, searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
     expect(loading.value).toBe(false)
@@ -451,77 +385,46 @@ describe('useTwinPodNoteSearch — loading transition', () => {
 // ---------------------------------------------------------------------------
 
 describe('useTwinPodNoteSearch — regression guards', () => {
-  // Spec: F.Find_Note — discovery is about TYPES, not URI NAMING. A
-  // resource whose URI does not match any prefix convention must still
-  // be returned if its RDF type matches. This guard locks the v5.1.3
-  // draft's `/t/t_note_` URI-prefix filter OUT.
-  test('returns notes regardless of URI path / naming (no t_note_ prefix filter)', async () => {
-    const candidates = [
-      `${POD}/t/t_note_classic`,
-      `${POD}/t/weird_name_no_prefix`,
-      `${POD}/t/t_annotation_42`
-    ]
-    setContainerListing(`${POD}/t/`, candidates)
-    setStoreTypeHits({ schemaNote: candidates })
-    const { searchNotes } = useTwinPodNoteSearch()
-    const result = await searchNotes(POD)
-    expect(result.map(r => r.uri).sort()).toEqual([...candidates].sort())
-  })
-
-  // Spec: F.Find_Note — the 5.0.0 regression matched on
-  // neo:a_fragmented-document so "list my notes" returned zero. Lock it
-  // out across ALL queried type objects.
-  test('never matches on neo:a_fragmented-document (5.0.0 regression type)', async () => {
-    setContainerListing(`${POD}/t/`, [`${POD}/t/t_note_a`])
+  // Spec: F.Find_Note — 5.1.8 discovered that the real pod returns SIO-typed
+  // Turtle from the search endpoint. The two-step m_cid lookup is now the
+  // only correct discovery primitive. This guard locks in that pattern.
+  test('queries rdfStore with neo:m_cid predicate to resolve SIO class (5.1.8 guard)', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    for (const call of mockStoreMatch.mock.calls) {
-      expect(call[2].value).not.toContain('a_fragmented-document')
+    const predicates = mockStoreMatch.mock.calls.map(c => c[1]?.value)
+    expect(predicates).toContain('https://neo.graphmetrix.net/node/m_cid')
+  })
+
+  // Spec: F.Find_Note — 5.0.0 regression matched neo:a_fragmented-document.
+  // With the m_cid approach, concept names come from typeUris only — guard
+  // that searchAndGetURIs is never called with 'a_fragmented-document'.
+  test('never calls searchAndGetURIs with concept a_fragmented-document (5.0.0 regression guard)', async () => {
+    const { searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1])
+    for (const c of concepts) {
+      expect(c).not.toContain('fragmented')
     }
   })
 
-  // Spec: F.Find_Note — 5.1.2 required schema:Note in the queried types.
-  // NoteWorld writes schema:Note; dropping it vanishes every
-  // NoteWorld-authored note.
-  test('includes schema:Note in the queried types (5.1.2 guard)', async () => {
-    setContainerListing(`${POD}/t/`, [`${POD}/t/t_note_a`])
+  // Spec: F.Find_Note — 5.1.4–5.1.6 used LDP container listing, which
+  // is wrong for TwinPod. Discovery MUST be via ur.searchAndGetURIs.
+  test('uses ur.searchAndGetURIs for discovery; never uses container listing (5.1.7 guard)', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    const objectValues = mockStoreMatch.mock.calls.map(call => call[2].value)
-    expect(objectValues).toContain('http://schema.org/Note')
+    expect(mockSearchAndGetURIs).toHaveBeenCalled()
+    // ur.hyperFetch is not on the mock — calling it throws TypeError,
+    // failing loudly. This is intentional.
   })
 
-  // Spec: F.Find_Note — 5.1.3 tried /search/{concept}; that path does
-  // not exist on this pod's indexer on tst-ia2 (returns empty). The
-  // composable must NOT rely on ur.searchAndGetURIs for enumeration.
-  // (We don't import or mock it; the source file should not reference
-  // it either. This guard is a semantic lock — if a refactor adds it
-  // back, hyperFetch call shape or the test expectations would shift
-  // visibly.)
-  test('uses ur.fetchAndSaveTurtle for per-candidate classification, not ur.searchAndGetURIs', async () => {
-    const candidates = [`${POD}/t/t_note_a`]
-    setContainerListing(`${POD}/t/`, candidates)
+  // Spec: F.Find_Note — 5.1.2–5.1.3 passed 'note'/'notes' as concept names.
+  // The search index key is the Neo identifier; human labels return empty.
+  test('never searches for concept "note" or "notes" (5.1.3 regression guard)', async () => {
     const { searchNotes } = useTwinPodNoteSearch()
     await searchNotes(POD)
-    expect(mockFetchAndSaveTurtle).toHaveBeenCalledWith(candidates[0], true)
-  })
-
-  // Spec: F.Find_Note — isolate LDP parse from the shared store. The
-  // container listing is parsed into a TEMPORARY graph created by
-  // $rdf.graph(), never into ur.rdfStore. If a future change parses LDP
-  // metadata into the shared store, cross-source leakage could shadow
-  // real type triples.
-  test('parses the container Turtle into a temporary graph, not ur.rdfStore', async () => {
-    setContainerListing(`${POD}/t/`, [`${POD}/t/t_note_a`])
-    const { searchNotes } = useTwinPodNoteSearch()
-    await searchNotes(POD)
-    const tempGraphInstance = mockTempGraphFactory.mock.results[0]?.value
-    expect(tempGraphInstance).toBeDefined()
-    const parseTarget = mockRdfParse.mock.calls[0]?.[1]
-    expect(parseTarget).toBe(tempGraphInstance)
-    // The shared store's match is our mockStoreMatch; the temp graph's
-    // is a function on the ad-hoc object we returned from the factory.
-    expect(parseTarget.match).not.toBe(mockStoreMatch)
+    const concepts = mockSearchAndGetURIs.mock.calls.map(c => c[1])
+    expect(concepts).not.toContain('note')
+    expect(concepts).not.toContain('notes')
   })
 })
 
@@ -534,5 +437,58 @@ describe('useTwinPodNoteSearch — error clearing', () => {
     expect(error.value?.type).toBe('invalid-input')
     await searchNotes(POD)
     expect(error.value).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('useTwinPodNoteSearch — reactive notes ref', () => {
+  // Spec: F.Find_Note — the reactive `notes` ref must be updated after searchNotes
+  // so that HomeView's v-for binding reflects the found notes.
+  test('notes.value is updated with found notes after successful searchNotes', async () => {
+    setStoreMatches({
+      mcidResults: [{ conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH }],
+      typeResults:  { [SIO_PARAGRAPH]: [`${POD}/node/t_note_a`] }
+    })
+    const { notes, searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    expect(notes.value.map(r => r.uri)).toEqual([`${POD}/node/t_note_a`])
+  })
+
+  // Spec: F.Find_Note — notes.value must reset to [] when a new search returns empty
+  // (guards against a stale-list bug where notes from a prior search persist after
+  // switching to a pod with no notes).
+  test('notes.value resets to [] on a subsequent search that returns empty', async () => {
+    setStoreMatches({
+      mcidResults: [{ conceptName: 'a_paragraph', classUri: SIO_PARAGRAPH }],
+      typeResults:  { [SIO_PARAGRAPH]: [`${POD}/node/t_note_a`] }
+    })
+    const { notes, searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    expect(notes.value.length).toBe(1)
+    // Reset store to return no hits on the next call
+    mockStoreMatch.mockReturnValue([])
+    await searchNotes(POD)
+    expect(notes.value).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('useTwinPodNoteSearch — loading resets on error paths', () => {
+  // Spec: F.Find_Note — loading must return to false after an error, not stay
+  // stuck. HomeView relies on searchLoading to hide the "Loading notes…" spinner.
+  test('loading.value is false after all searches reject (network error path)', async () => {
+    mockSearchAndGetURIs.mockRejectedValue(new Error('network'))
+    const { loading, searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    expect(loading.value).toBe(false)
+  })
+
+  test('loading.value is false after all searches return error flag (search-error path)', async () => {
+    mockSearchAndGetURIs.mockResolvedValue({ error: 'true' })
+    const { loading, searchNotes } = useTwinPodNoteSearch()
+    await searchNotes(POD)
+    expect(loading.value).toBe(false)
   })
 })

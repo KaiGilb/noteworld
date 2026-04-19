@@ -52,12 +52,12 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     expect(mockUploadTurtleToResource.mock.calls[0][0]).toBe(NOTE_URL)
   })
 
-  test('Turtle body contains schema prefix and Note type', async () => {
+  test('Turtle body contains neo prefix and a_paragraph type', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'hello')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
-    expect(turtle).toContain('@prefix schema:')
-    expect(turtle).toContain('schema:Note')
+    expect(turtle).toContain('@prefix neo:')
+    expect(turtle).toContain('a_paragraph')
   })
 
   test('Turtle body contains the text value', async () => {
@@ -112,6 +112,16 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     await saveNote(NOTE_URL, 'hello')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
     expect(turtle).toContain('<https://example.com/body>')
+  })
+
+  // 5.2.1 regression guard — blank-node subject (_:t1) prevented TwinPod from
+  // indexing saved notes in search results. The resource URI must be the Turtle subject.
+  test('uses the note URL as the Turtle subject, not a blank node (5.2.1 regression guard)', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'hello')
+    const turtle = mockUploadTurtleToResource.mock.calls[0][1]
+    expect(turtle).toContain(`<${NOTE_URL}>`)
+    expect(turtle).not.toContain('_:')
   })
 
   // 5.1.1 — PUT (full-replace) instead of the library default PATCH.

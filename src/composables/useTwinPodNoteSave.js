@@ -28,7 +28,7 @@
  *
  * @param {object} [options]
  * @param {string} [options.predicateUri='http://schema.org/text'] - Predicate for the note body.
- * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
+ * @param {string} [options.typeUri='https://neo.graphmetrix.net/node/a_paragraph'] - RDF type for the Note.
  *
  * @returns {{
  *   saving: import('vue').Ref<boolean>,
@@ -47,7 +47,7 @@ import { ref } from 'vue'
 import { ur } from '@kaigilb/twinpod-client'
 
 const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
-const DEFAULT_TYPE_URI = 'http://schema.org/Note'
+const DEFAULT_TYPE_URI = 'https://neo.graphmetrix.net/node/a_paragraph'
 
 function escapeTurtleString(str) {
   let result = ''
@@ -78,7 +78,10 @@ export function useTwinPodNoteSave({ predicateUri = DEFAULT_TEXT_PREDICATE, type
   async function runPut(noteResourceUrl, text) {
     try {
       const safeText = text.trim() !== '' ? text : ' '
-      const turtle = `@prefix schema: <http://schema.org/> .\n_:t1 a schema:Note ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
+      // Use the resource URI as the Turtle subject — not a blank node.
+      // TwinPod's search index associates rdf:type with the resource URI; a blank
+      // node subject leaves the note URI untyped so it never appears in search results.
+      const turtle = `@prefix neo: <https://neo.graphmetrix.net/node/> .\n<${noteResourceUrl}> a neo:a_paragraph ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
 
       // method: 'PUT' — full-replace semantics match our "build complete Turtle
       // document" pattern. Default PATCH with Content-Type: text/turtle is not

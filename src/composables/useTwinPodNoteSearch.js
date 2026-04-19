@@ -1,74 +1,49 @@
 // UNIT_TYPE=Hook
 
 /**
- * Lists notes in a TwinPod pod by RDF type.
+ * Lists notes in a TwinPod pod by searching for Neo concept types.
  *
- * Two-phase, type-driven discovery:
+ * **TwinPod has no folder structure for data.** Discovery is always
+ * type-driven via the pod's search endpoint, never via LDP container
+ * listing. (Confirmed by Kai 2026-04-19.)
  *
- *   Phase 1 — enumerate candidate resources.
- *     GET each container in `containerPaths` as Turtle, parse into a
- *     TEMPORARY rdflib graph, and pull every `ldp:contains` object. The
- *     parse is temporary so the container's own LDP metadata (ldp:contains,
- *     uri4uri:path, sio:SIO_000148 reification types, etc.) does not
- *     pollute the shared `ur.rdfStore` — that store is reserved for
- *     type/attribute triples we actually want to filter on.
+ * Approach — search-first, two-step SIO class resolution:
+ *   For each URI in `typeUris`, derive the Neo concept name (the last
+ *   path segment, e.g. `a_paragraph` from
+ *   `https://neo.graphmetrix.net/node/a_paragraph`) and call
+ *   `ur.searchAndGetURIs(podRoot, conceptName, { force: true })`.
  *
- *   Phase 2 — classify each candidate by RDF type.
- *     Fire one `ur.fetchAndSaveTurtle` per candidate in parallel. Each
- *     parses the resource's own Turtle (which includes `a schema:Note`
- *     or `a neo:a_note` when NoteWorld or compatible tooling wrote it)
- *     into the shared `ur.rdfStore`. After all settle, we run ONE type
- *     match across the store and filter to the subjects in our candidate
- *     set (so unrelated triples already in the store from other
- *     composables don't leak into the result).
+ *   The pod's `{podRoot}/search/{conceptName}` endpoint returns Turtle
+ *   where note resources are typed via a SIO class URI (e.g.
+ *   `sio:SIO_000110`), not directly as `neo:a_paragraph`. The SIO class
+ *   carries `neo:m_cid "a_paragraph"` to link it back to the Neo concept
+ *   name. Two-step resolution after each search populates `ur.rdfStore`:
+ *     1. Find the SIO class node whose `neo:m_cid` value matches the
+ *        concept name (wildcard match on `neo:m_cid`, filter by value).
+ *     2. Collect all subjects typed as that class — those are the notes.
  *
- * Why this shape — and why NOT `/search/…`:
- *   TwinPod's `/search/{concept}` endpoint is a per-pod keyword index,
- *   not a type enumerator. Concept names are resolved against the pod's
- *   Neo ontology map and are NOT portable — verified 2026-04-18: the
- *   same 15 notes that `tst-first.demo.systemtwin.com/search/note`
- *   returns are entirely absent from `tst-ia2.demo.systemtwin.com`'s
- *   search index (returns 200 empty-body for both 'note' and effectively
- *   empty for 'notes'). We cannot rely on search to enumerate notes.
- *   The container listing is the only primitive that works on every pod.
+ *   Verified 2026-04-19 against tst-ia2.demo.systemtwin.com:
+ *   `{pod}/search/a_paragraph` returns Turtle where notes are typed
+ *   `rdf:type sio:SIO_000110` and the class carries
+ *   `neo:m_cid "a_paragraph"`. `rdf:type neo:a_paragraph` does not appear.
  *
- * Why containerPaths is a parameter, not a constant:
- *   Per `Rule_Code_twinpod-client-package.md`'s "no hardcoded ontology"
- *   rule and the "interim `/t/` container as ACL workaround" framing in
- *   `project_twinpod_data_driven_layout` memory, the container path is
- *   a deployment detail, not a semantic criterion. The DEFAULT `['/t/']`
- *   matches the current NoteWorld invariant; callers running against
- *   pods with a different layout can override without forking.
- *
- *   CRITICAL: the container path is used ONLY to enumerate candidates.
- *   The note-ness decision is still made by the `typeUris` filter after
- *   Phase 2. If a resource's URI path happens to match a different
- *   container but its type is schema:Note, it is still discovered as
- *   long as that container is in `containerPaths`. URI-prefix filtering
- *   (e.g. requiring `/t/t_note_` in the path) is explicitly NOT done —
- *   discovery is about types, not about URI naming conventions.
- *
- * Why typeUris is a parameter:
- *   Same rule — the note types could be `schema:Note`, `neo:a_note`,
- *   or a future refinement. Defaults cover both today (NoteWorld writes
- *   `schema:Note`; other tooling may reify as `neo:a_note`).
+ * Why `force: true`:
+ *   Bypasses the `ur.searchAndGetURIs` session cache so new notes appear
+ *   immediately without a page reload.
  *
  * Error model:
- *   - Container listing: every path is attempted independently.
- *     `discovery-error` is set only when EVERY container listing fails.
- *     A single path failing is tolerated.
- *   - Per-resource GET: every GET is attempted independently
- *     (`Promise.allSettled`). A 404/500 on one note does not poison the
- *     others; the type match simply won't see a triple for it.
+ *   `search-error` is set only when every search fails (HTTP >= 400 or
+ *   all searches reject). A 200 with empty body is a valid empty state
+ *   (pod has no notes of that concept yet). Individual search failures
+ *   are tolerated; the store match simply won't see triples for that type.
  *
  * @param {object} [opts]
- * @param {string[]} [opts.containerPaths=['/t/']]
- *   Container paths (relative to podRoot, with leading and trailing
- *   slash) to enumerate. Listed in parallel; results unioned by URI.
  * @param {string[]} [opts.typeUris]
  *   Full URIs of RDF types that qualify a resource as a note. Defaults
- *   to `['http://schema.org/Note', 'https://neo.graphmetrix.net/node/a_note']`.
- *   A resource typed ANY of these is included.
+ *   to `['https://neo.graphmetrix.net/node/a_paragraph',
+ *           'https://neo.graphmetrix.net/node/a_note']`.
+ *   The Neo concept name for the search endpoint is derived as the last
+ *   path/fragment segment of each URI.
  *
  * @returns {{
  *   notes:   import('vue').Ref<Array<{ uri: string }>>,
@@ -77,22 +52,25 @@
  *   searchNotes: (podRoot: string) => Promise<Array<{ uri: string }>>
  * }}
  *
- * Error types: 'invalid-input', 'discovery-error', 'network'.
+ * Error types: 'invalid-input', 'search-error', 'network'.
  */
 
 import { ref } from 'vue'
 import { ur } from '@kaigilb/twinpod-client'
 
-const DEFAULT_CONTAINER_PATHS = ['/t/']
 const DEFAULT_TYPE_URIS = [
-  'http://schema.org/Note',
+  'https://neo.graphmetrix.net/node/a_paragraph',
   'https://neo.graphmetrix.net/node/a_note'
 ]
 
+// Derive the Neo concept name from a full type URI.
+// 'https://neo.graphmetrix.net/node/a_paragraph' → 'a_paragraph'
+// 'http://example.org/vocab#MyType'              → 'MyType'
+function conceptName(typeUri) {
+  return typeUri.split('/').pop().split('#').pop()
+}
+
 export function useTwinPodNoteSearch(opts = {}) {
-  const containerPaths = Array.isArray(opts.containerPaths) && opts.containerPaths.length > 0
-    ? opts.containerPaths
-    : DEFAULT_CONTAINER_PATHS
   const typeUris = Array.isArray(opts.typeUris) && opts.typeUris.length > 0
     ? opts.typeUris
     : DEFAULT_TYPE_URIS
@@ -100,32 +78,6 @@ export function useTwinPodNoteSearch(opts = {}) {
   const notes = ref([])
   const loading = ref(false)
   const error = ref(null)
-
-  // Enumerates ldp:contains subjects from a single container. Returns
-  // { uris: string[], failed: boolean }. An empty container is
-  // { uris: [], failed: false } — not a failure.
-  async function listContainer(containerUrl) {
-    try {
-      const res = await ur.hyperFetch(containerUrl, {
-        method: 'GET',
-        credentials: 'include',
-        headers: { Accept: 'text/turtle' }
-      })
-      if (!res.ok) return { uris: [], failed: true }
-      const turtle = await res.text()
-
-      const tmp = ur.$rdf.graph()
-      ur.$rdf.parse(turtle, tmp, containerUrl, 'text/turtle')
-
-      const uris = tmp
-        .match(ur.$rdf.sym(containerUrl), ur.NS.LDP('contains'), null)
-        .map(st => st.object.value)
-
-      return { uris, failed: false }
-    } catch {
-      return { uris: [], failed: true }
-    }
-  }
 
   async function searchNotes(podRoot) {
     if (!podRoot) {
@@ -136,67 +88,66 @@ export function useTwinPodNoteSearch(opts = {}) {
     loading.value = true
     error.value = null
 
-    const root = podRoot.endsWith('/') ? podRoot.slice(0, -1) : podRoot
-
     try {
-      // Phase 1 — enumerate.
-      const containerResults = await Promise.allSettled(
-        containerPaths.map(path => listContainer(`${root}${path}`))
+      // Search for each type's concept name in parallel.
+      // Each call parses its Turtle into ur.rdfStore automatically.
+      const results = await Promise.allSettled(
+        typeUris.map(uri =>
+          ur.searchAndGetURIs(podRoot, conceptName(uri), { force: true })
+        )
       )
 
-      const candidates = []
-      const seenCandidates = new Set()
-      let anyContainerOk = false
-      for (const r of containerResults) {
-        if (r.status === 'fulfilled' && !r.value.failed) {
-          anyContainerOk = true
-          for (const uri of r.value.uris) {
-            if (!seenCandidates.has(uri)) {
-              seenCandidates.add(uri)
-              candidates.push(uri)
-            }
+      // search-error only when every search explicitly failed.
+      // A resolved search with empty results is valid (no notes yet).
+      // HTTP >= 400 counts as failed — a 500 on the search endpoint
+      // means we cannot enumerate and should surface an error, not
+      // silently return an empty list.
+      const anyOk = results.some(
+        r => r.status === 'fulfilled' &&
+             !r.value?.error &&
+             (!r.value?.status || r.value.status < 400)
+      )
+      if (!anyOk) {
+        error.value = { type: 'search-error', message: 'All concept searches failed' }
+        notes.value = []
+        return []
+      }
+
+      // Two-step SIO class resolution — union and dedup across all typeUris.
+      //
+      // The pod's search response types notes as instances of a SIO class
+      // (e.g. rdf:type sio:SIO_000110), not directly as neo:a_paragraph.
+      // The Neo concept name is linked to the SIO class via
+      // neo:m_cid "a_paragraph" on the class node. So:
+      //   Step 1 — find each SIO class whose neo:m_cid value matches
+      //            the concept name (wildcard match on M_CID, then filter
+      //            by st.object.value to avoid typed-literal comparison).
+      //   Step 2 — collect all subjects typed as that SIO class.
+      const M_CID = ur.NS.NEO('m_cid')
+
+      const hits = []
+      const seen = new Set()
+
+      for (const typeUri of typeUris) {
+        const cid = conceptName(typeUri)
+
+        // Step 1: find the SIO class(es) that map to this concept name.
+        const classNodes = []
+        for (const st of ur.rdfStore.match(null, M_CID, null)) {
+          if (st.object.value === cid) {
+            classNodes.push(st.subject)
           }
         }
-      }
 
-      if (!anyContainerOk) {
-        // Every container listing failed. We have no enumeration and
-        // cannot classify — this is a real failure, not empty state.
-        error.value = {
-          type: 'discovery-error',
-          message: 'All container listings failed'
-        }
-        notes.value = []
-        return []
-      }
-
-      // Fast path: zero candidates → zero notes, no GETs needed.
-      if (candidates.length === 0) {
-        notes.value = []
-        return []
-      }
-
-      // Phase 2 — classify. One parallel GET per candidate; each parses
-      // its own rdf:type triples into the shared ur.rdfStore. Failures
-      // are swallowed (the store simply won't get triples for that URI,
-      // so it drops out of the filter below).
-      await Promise.allSettled(
-        candidates.map(uri => ur.fetchAndSaveTurtle(uri, true))
-      )
-
-      // ONE type match across the store, restricted to our candidate set.
-      // The candidate set filter prevents the store's existing triples
-      // (from other composables on the same page) from leaking in.
-      const hits = []
-      const seenHits = new Set()
-      for (const typeUri of typeUris) {
-        const typeNode = ur.$rdf.sym(typeUri)
-        const stmts = ur.rdfStore.match(null, ur.NS.RDF('type'), typeNode)
-        for (const st of stmts) {
-          const uri = st.subject.value
-          if (seenCandidates.has(uri) && !seenHits.has(uri)) {
-            seenHits.add(uri)
-            hits.push({ uri })
+        // Step 2: collect note subjects typed as each matching class.
+        for (const classNode of classNodes) {
+          for (const noteSt of ur.rdfStore.match(null, ur.NS.RDF('type'), classNode)) {
+            const uri = noteSt.subject.value
+            // Exclude the concept class node itself (it's typed as a different SIO class)
+            if (!seen.has(uri) && uri !== classNode.value) {
+              seen.add(uri)
+              hits.push({ uri })
+            }
           }
         }
       }
@@ -204,9 +155,6 @@ export function useTwinPodNoteSearch(opts = {}) {
       notes.value = hits
       return hits
     } catch (e) {
-      // Per-step failures are already absorbed inside listContainer and
-      // Promise.allSettled; this catches anything thrown by the type
-      // match itself or by unexpected bugs.
       error.value = { type: 'network', message: e?.message || String(e) }
       notes.value = []
       return []

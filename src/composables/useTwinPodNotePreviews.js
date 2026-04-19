@@ -3,9 +3,9 @@
 /**
  * Loads short text previews for a list of note URIs.
  *
- * Uses the same direct window.solid.session.fetch approach as useTwinPodNoteRead
- * (no hypergraph header) so TwinPod returns the actual note Turtle.
- * Fetches all URIs in parallel and stores results in a reactive Map.
+ * Uses ur.fetchResourceTurtle (no hypergraph header) so TwinPod returns the
+ * actual note Turtle instead of the pod knowledge graph.
+ * Fetches all URIs in parallel and stores results in a reactive object.
  *
  * @param {object} [options]
  * @param {string} [options.predicateUri='http://schema.org/text'] - Predicate to read.
@@ -34,11 +34,8 @@ export function useTwinPodNotePreviews({ predicateUri = DEFAULT_TEXT_PREDICATE, 
     } catch { /* ignore */ }
 
     try {
-      const response = await window.solid.session.fetch(uri, {
-        headers: { Accept: 'text/turtle', 'Cache-Control': 'max-age=0' }
-      })
-      if (!response.ok) return
-      const turtle = await response.text()
+      const { ok, turtle } = await ur.fetchResourceTurtle(uri)
+      if (!ok) return
       const tempGraph = ur.$rdf.graph()
       ur.$rdf.parse(turtle, tempGraph, uri, 'text/turtle')
       const pred = ur.$rdf.sym(predicateUri)
