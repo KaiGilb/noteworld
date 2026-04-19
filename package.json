@@ -12,7 +12,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@kaigilb/noteworld-notes": "^5.2.1",
+    "@kaigilb/noteworld-notes": "^5.2.2",
     "@kaigilb/twinpod-auth": "^1.0.0",
     "@kaigilb/twinpod-client": "^1.1.0",
     "vue": "^3.4.0",
