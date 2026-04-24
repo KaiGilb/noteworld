@@ -34,7 +34,7 @@ function connect() {
     </button>
 
     <!-- Show auth errors if login setup fails before the redirect -->
-    <p v-if="error" role="alert" style="color: #c00; margin-top: 1rem;">
+    <p v-if="error" role="alert" style="color: var(--color-error-dark); margin-top: 1rem;">
       {{ error.message }}
     </p>
   </main>

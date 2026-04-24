@@ -229,15 +229,15 @@ function goHome() {
   <main
     class="editor-root"
     role="main"
-    style="position: fixed; inset: 0; height: 100dvh; width: 100vw; background: #ffffff; display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;"
+    style="position: fixed; inset: 0; height: 100dvh; width: 100vw; background: var(--color-surface-white); display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;"
   >
     <header
-      style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 1rem; border-bottom: 1px solid #e5e5e5; flex-shrink: 0;"
+      style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 1rem; border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0;"
     >
       <button
         @click="goHome"
         aria-label="Back to notes"
-        style="cursor: pointer; min-height: 44px; padding: 0 0.75rem; background: transparent; border: none; color: #1a73e8; font-size: 1rem; font-family: inherit;"
+        style="cursor: pointer; min-height: 44px; padding: 0 0.75rem; background: transparent; border: none; color: var(--color-primary); font-size: 1rem; font-family: inherit;"
       >
         ← Notes
       </button>
@@ -253,7 +253,7 @@ function goHome() {
         :style="{
           opacity: statusVisible ? 1 : 0,
           transition: 'opacity 0.4s ease-out',
-          color: '#595959',
+          color: 'var(--color-text-muted)',
           fontSize: '0.875rem',
           minWidth: '4rem',
           textAlign: 'right'
@@ -278,20 +278,20 @@ function goHome() {
       v-model="text"
       aria-label="Note content"
       placeholder="Start writing…"
-      style="flex: 1 1 auto; width: 100%; border: none; outline: none; resize: none; padding: 1rem; box-sizing: border-box; font-family: inherit; font-size: 1rem; line-height: 1.5; color: #1a1a1a; background: transparent;"
+      style="flex: 1 1 auto; width: 100%; border: none; outline: none; resize: none; padding: 1rem; box-sizing: border-box; font-family: inherit; font-size: 1rem; line-height: 1.5; color: var(--color-text-primary); background: transparent;"
     ></textarea>
 
     <p
       v-if="readError && readError.type !== 'not-found'"
       role="alert"
-      style="color: #c00; margin: 0; padding: 0.5rem 1rem; background: #fff5f5; border-top: 1px solid #fcc;"
+      style="color: var(--color-error-dark); margin: 0; padding: 0.5rem 1rem; background: var(--color-error-light); border-top: 1px solid var(--color-connection-blocked-border);"
     >
       {{ readError.message }}
     </p>
     <p
       v-if="saveError"
       role="alert"
-      style="color: #c00; margin: 0; padding: 0.5rem 1rem; background: #fff5f5; border-top: 1px solid #fcc;"
+      style="color: var(--color-error-dark); margin: 0; padding: 0.5rem 1rem; background: var(--color-error-light); border-top: 1px solid var(--color-connection-blocked-border);"
     >
       {{ saveError.message }}
     </p>

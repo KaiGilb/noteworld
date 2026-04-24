@@ -186,21 +186,21 @@ function openNote(uri) {
     </button>
 
     <!-- Note creation status and errors -->
-    <p v-if="noteLoading" role="status" style="color: #595959; margin-top: 0.5rem;">Creating note…</p>
-    <p v-if="noteError" role="alert" style="color: #c00; margin-top: 0.5rem;">{{ noteError.message }}</p>
+    <p v-if="noteLoading" role="status" style="color: var(--color-text-muted); margin-top: 0.5rem;">Creating note…</p>
+    <p v-if="noteError" role="alert" style="color: var(--color-error-dark); margin-top: 0.5rem;">{{ noteError.message }}</p>
 
     <!-- Logout status and errors -->
-    <p v-if="loading" role="status" style="color: #595959; margin-top: 0.5rem;">Logging out…</p>
-    <p v-if="error" role="alert" style="color: #c00; margin-top: 0.5rem;">{{ error.message }}</p>
+    <p v-if="loading" role="status" style="color: var(--color-text-muted); margin-top: 0.5rem;">Logging out…</p>
+    <p v-if="error" role="alert" style="color: var(--color-error-dark); margin-top: 0.5rem;">{{ error.message }}</p>
 
     <!-- Spec: F.Find_Note — list of existing notes -->
     <section style="margin-top: 2rem;" aria-label="Your notes">
       <h2>Your Notes</h2>
 
-      <p v-if="searchLoading" role="status" style="color: #595959;">Loading notes…</p>
-      <p v-if="searchError" role="alert" style="color: #c00;">{{ searchError.message }}</p>
+      <p v-if="searchLoading" role="status" style="color: var(--color-text-muted);">Loading notes…</p>
+      <p v-if="searchError" role="alert" style="color: var(--color-error-dark);">{{ searchError.message }}</p>
 
-      <p v-if="!searchLoading && !searchError && sortedNotes.length === 0" style="color: #595959;">
+      <p v-if="!searchLoading && !searchError && sortedNotes.length === 0" style="color: var(--color-text-muted);">
         No notes yet. Click "New Note" to get started.
       </p>
 
@@ -209,10 +209,10 @@ function openNote(uri) {
           <button
             @click="openNote(note.uri)"
             :data-uri="note.uri"
-            style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid #ccc; background: #fafafa; font-size: 0.9rem; min-height: 44px;"
+            style="text-align: left; cursor: pointer; padding: 0.75rem 1rem; width: 100%; border: 1px solid var(--color-border-default); background: var(--color-surface-card); font-size: 0.9rem; min-height: 44px;"
           >
             <span v-if="previews[note.uri]" style="display: block;">{{ previews[note.uri] }}</span>
-            <span style="display: block; font-size: 0.75rem; color: #696969;">{{ noteDate(note.uri) }}</span>
+            <span style="display: block; font-size: 0.75rem; color: var(--color-text-muted);">{{ noteDate(note.uri) }}</span>
           </button>
         </li>
       </ul>
@@ -220,7 +220,7 @@ function openNote(uri) {
       <button
         v-if="sortedNotes.length > displayCount"
         @click="loadMore"
-        style="margin-top: 0.75rem; width: 100%; padding: 0.75rem; cursor: pointer; border: 1px solid #ccc; background: transparent; font-size: 0.9rem; min-height: 44px; color: #1a73e8;"
+        style="margin-top: 0.75rem; width: 100%; padding: 0.75rem; cursor: pointer; border: 1px solid var(--color-border-default); background: transparent; font-size: 0.9rem; min-height: 44px; color: var(--color-primary);"
       >
         Load more ({{ sortedNotes.length - displayCount }} remaining)
       </button>

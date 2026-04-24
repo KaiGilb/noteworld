@@ -7,6 +7,7 @@
  * @see Spec: /Users/kaigilb/Vault_Ideas/5 - Project/NoteWorld/NoteWorld.md
  */
 
+import './assets/design-tokens.css'
 import { createApp } from 'vue'
 import App from './App.vue'
 import router from './router'
